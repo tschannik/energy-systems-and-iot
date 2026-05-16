@@ -24,7 +24,6 @@ buildings <- read_tsv(
   show_col_types = FALSE
 )
 
-
 ## 2. Keep only existing residential buildings -----------------------------
 # GKAT: 1020 = exclusively residential, 1030 = residential with side use
 # GSTAT 1004 = the building actually exists today.

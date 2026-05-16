@@ -1,0 +1,189 @@
+---
+title: "Income and Renewable Heating Adoption in Switzerland"
+author: "Yannik Zimmermann & Birk Diener"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(dplyr)
+library(readr)
+library(readxl)
+library(ggplot2)
+```
+
+## Motivation
+
+Switzerland has committed to achieving net-zero greenhouse gas emissions by 2050, with the heating sector representing one of the largest remaining sources of fossil fuel consumption. Transitioning residential buildings away from oil and gas heating towards renewable alternatives such as heat pumps, solar thermal systems, and biomass is therefore a critical lever of the energy transition. However, adoption rates of renewable heating systems vary significantly across Swiss municipalities (bfs 2024). This project investigates a potential explanation for this heterogenous adoption pattern, namely whether a statistically measurable relationship exists between community-level income and the share of renewable heating systems installed.
+
+## Project Aim
+
+This project aims to quantify the relationship between median income at the municipality level and the share of buildings equipped with renewable heating systems across Swiss municipalities. The analysis will address two core research questions: 
+
+- Is there a statistically significant relationship between municipal-level financial capacity, measured through taxable income, and the share of residential buildings equipped with renewable heating systems across Swiss municipalities?
+- To what extent is this relationship robust to structural characteristics of the building stock, namely the share of single-family houses and the age of the building stock, and to cantonal differences in subsidy programmes?
+
+The analysis draws on the Federal Building and Dwellings Register (GWR) and ESTV municipal tax data. Given known data quality limitations in the GWR heating system entries, a systematic data recency assessment is integrated into the analysis prior to modelling. The findings will be visualised through choropleth maps and scatter plots to make spatial and socioeconomic patterns legible for a broader audience.
+
+## Data Sources
+
+Two datasets are used for this analysis, both openly available and joinable at the Swiss municipality level (BFS-Gemeindecode). The first is the Federal Building and Dwellings register (GWR), which records the primary heating energy, building category, and year of construction for every residential building in Switzerland. Key variables used in this analysis are the heating system type (GWAERZH1), the energy source (GENH1), the year of construction (GBAUJ), the information source of the heating entry (GWAERSCEH1), the last update date of the heating entry (GWAERDATH1), and the municipality code (GGDENR).
+
+While the general availability of data to answer the research question is good, there is a significant challenge regarding the reliability of the heating system entries. The last comprehensive national update of this information took place as part of the Volkszählung 2000. Since then, municipal building departments are responsible for updating entries, primarily through building permit applications. As a result, data quality varies across municipalities, and heating systems installed without a building permit — such as most external air-source heat pumps — may not be recorded. We investigate this aspect further in the data preparation chapter.  
+
+The second dataset is the income and wealth statistics from the Federal Tax Administration (ESTV), which provides median taxable income per municipality at the level of natural persons. It is published annually with a lag of approximately two years.
+
+## Approach
+
+The analysis proceeds in four steps: First, GWR building data is aggregated to the municipality level to compute the share of residential buildings equipped with a renewable heating system as a fraction of all buildings with a recorded heating system entry. Renewable heating is defined as heat pump, solar thermal, or biomass combined with energy source. District heating is excluded from the primary definition as its adoption is structurally determined by local infrastructure rather than individual investment decisions, but is included in a sensitivity analysis. The share of pre-1980 buildings per municipality serves as the building age control variable. 
+
+Second, the municipal renewable heating share is joined to the ESTV income data using the BFS municipality code. Third, regression models are estimated using a stepwise approach: a baseline model with median income as the sole predictor, followed by successive addition of building structure controls (share of single-family houses, share of pre-1980 buildings), sociodemographic controls (municipal type, log population size), and cantonal fixed effects to absorb unobserved variation in subsidy programmes and building regulations. The municipal share of low-quality heating entries is included as a control variable throughout all model specifications. The stability of the income coefficient across specifications is reported. 
+
+Fourth, findings are visualized through choropleth maps showing the spatial distribution of renewable heating adoption and median income respectively.
+
+## Data Preparation
+Before proceeding to the analysis, the GWR building data is prepared and aggregated to the municipal level. The preparation process includes filtering for residential buildings, flagging renewable heating systems, and assessing the quality of the heating system entries.
+
+Residential buildings are identified using two GWR variables. First, GKAT (building category) is restricted to codes 1020 (exclusively residential) and 1030 (residential with secondary use), excluding buildings without mostly residential use. Second, GSTAT (building status) is restricted to code 1004, retaining only buildings recorded as currently existing and excluding buildings under construction, demolished, or otherwise inactive. Together, these two filters define the analytical population of existing residential buildings on which all subsequent measures are computed.
+
+Heating systems are categorised based on the energy source variable (GENH1) across ten mutually exclusive groups: no heating system (7500), air-source heat pump (7501), ground- and water-source heat pump (7510–7513), gas (7520), oil (7530), wood and biomass (7540–7543), waste heat (7550), electricity (7560), solar thermal (7570), district heating (7580–7582), and unspecified or other (7598–7599). A building is flagged as renewable if its primary energy source is a heat pump, solar thermal, wood or biomass, waste heat, or recorded as having no heating system. The latter category is included on the grounds that buildings without an active heating system generate no fossil fuel consumption from space heating, making their exclusion from the renewable count methodologically conservative. District heating is retained as a separate flag for sensitivity analysis, as its adoption depends on local infrastructure availability rather than individual investment decisions.
+
+```{r load gwr data}
+
+## 1. Read the GWR building data --------------------------------------------
+# The file is tab-separated even though it ends in .csv. We only read the
+# columns we actually use (the full file has ~50 columns and ~3.3 M rows).
+
+buildings <- read_tsv(
+  here("gwr", "gebaeude_batiment_edificio.csv"),
+  col_select = c(GGDENR, GGDENAME, GDEKT,
+                 GKAT, GKLAS, GSTAT, GBAUJ,
+                 GWAERZH1, GENH1, GWAERSCEH1, GWAERDATH1),
+  na = c("", "NA"),
+  show_col_types = FALSE
+)
+
+## 2. Keep only existing residential buildings -----------------------------
+# GKAT: 1020 = exclusively residential, 1030 = residential with side use
+# GSTAT 1004 = the building actually exists today.
+
+residential <- buildings %>%
+  filter(GKAT %in% c(1020, 1030), GSTAT == 1004)
+
+
+## 3. Flag each building --------------------------------------------------
+# Renewable heating per the project brief:
+
+residential <- residential %>%
+  mutate(
+    # Kein Heizsystem — 7500
+    is_no_heatsystem = GENH1 == 7500,
+    # Wärmepumpe Luft — 7501
+    is_hp_air        = GENH1 == 7501,
+    # Wärmepumpe Erde/Wasser — 751x
+    is_hp_ground     = GENH1 %in% c(7510, 7511, 7512, 7513),
+    # Fossil — 752x, 753x
+    is_gas           = GENH1 == 7520,
+    is_oil           = GENH1 == 7530,
+    # Holz — 754x
+    is_wood          = GENH1 %in% c(7540, 7541, 7542, 7543),
+    # Abwärme — 755x
+    is_waste_heat    = GENH1 == 7550,
+    # Elektrizität — 756x
+    is_electric      = GENH1 == 7560,
+    # Solar thermisch — 757x
+    is_solar         = GENH1 == 7570,
+    # Fernwärme — 758x (Sensitivity Analysis)
+    is_district      = GENH1 %in% c(7580, 7581, 7582),
+    # Unbestimmt/Andere — 759x
+    is_other         = GENH1 %in% c(7598, 7599),
+    
+    # Aggregierte Flags
+    is_heatpump  = is_hp_air | is_hp_ground,
+    is_renewable = is_heatpump | is_wood | is_solar | 
+                   is_waste_heat | is_no_heatsystem
+  )
+
+## 5. Aggregate to the municipality ---------------------------------------
+# Renewable share is defined over buildings with a heating entry, so the
+# denominator is sum(!is.na(GWAERZH1)), not n().
+
+muni <- residential %>%
+  group_by(bfs_id = GGDENR, municipality = GGDENAME, canton = GDEKT) %>%
+  summarise(
+    n_buildings     = n(),
+    n_with_heating  = sum(!is.na(GWAERZH1)),
+    renewable_share = sum(is_renewable)   / sum(!is.na(GWAERZH1)),
+    .groups = "drop"
+  )
+```
+
+
+Unfortunately, the heating system entries in the GWR are of limited reliability. The last comprehensive national update of this information took place as part of the Volkszählung 2000, and since then, municipal building departments are responsible for updating entries, primarily through building permit applications. As a result, data quality varies across municipalities, and heating systems installed without a building permit — such as most external air-source heat pumps — may not be recorded.
+This is visible in Figure 1, which plots the most recent update year of the heating entry per building: approximately 600,000 residential buildings have not had their heating entry updated since 2000, and a further 1.08 million buildings have no update date recorded at all. Together these two groups represent approximately 50% of the 3.3 million buildings in the GWR.
+
+```{r gwr data quality}
+
+## 4. Quick data-quality check --------------------------------------------
+# When was the heating entry last updated? The brief notes this is a problem,
+# many entries still go back to the 2000 census.
+
+residential %>%
+  mutate(year = as.integer(substr(GWAERDATH1, 1, 4))) %>%
+  filter(!is.na(year), year >= 1990) %>%
+  ggplot(aes(year)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Latest update of the GWR heating entry",
+       x = NULL, y = "Number of buildings") +
+  theme_minimal()
+
+```
+
+Figure 1: Distribution of GWR heating entry update years for residential buildings in Switzerland
+
+*Note: The figure shows the number of residential buildings by the year of their most recent heating system entry update (GWAERDATH1). Buildings with no recorded update date (n = 1,083,361) are excluded from the plot. The spike in 2001 reflects entries sourced from the Volkszählung 2000 (GWAERSCEH1 = 860), which represent the last comprehensive national update of heating system data. The subsequent increase from 2019 onwards reflects growing administrative activity following the 2017 revision of the GWR ordinance, which made heating data recording mandatory for new building permits.*
+
+To account for this, each building is assigned a binary low-quality flag if its heating entry either has no recorded update date or is explicitly sourced from the Volkszählung 2000 (GWAERSCEH1 = 860). Aggregated to the municipal level, this produces a share of low-quality heating entries per municipality, which is used as a control variable in the regression models. The median municipality has 58% of its heating entries flagged as low quality, with an interquartile range of 48.5% to 69.3%, indicating that the data quality challenge is structural rather than isolated. Results should therefore be interpreted as conservative estimates: low-quality entries are likely concentrated in older building stock that is disproportionately fossil-heated, meaning the measured renewable heating shares likely underestimate true adoption rates, and any detected income effect is likely attenuated by this noise rather than inflated.
+
+
+```{r load estv data}
+
+estv_file <- here("estv", "statistik-dbst-np-gden-2022-normalfall.xlsx")
+
+read_total <- function(sheet, value_name) {
+  raw <- read_excel(
+    estv_file, sheet = sheet, skip = 2,
+    col_types = c("text", "text", "numeric", "text", rep("numeric", 11)),
+    na = c("", "NA", "-")                    # <- '-' ergänzt
+  )
+  names(raw)[1:4]       <- c("canton_id", "canton_name", "bfs_id", "muni_name")
+  names(raw)[ncol(raw)] <- "total"
+  raw %>%
+    filter(!is.na(bfs_id)) %>%
+    select(bfs_id, !!value_name := total)
+}
+
+counts <- read_total("511", "n_taxpayers")
+sums   <- read_total("512", "sum_taxable")
+
+income <- counts %>%
+  left_join(sums, by = "bfs_id") %>%
+  mutate(mean_taxable = sum_taxable / n_taxpayers)
+
+```
+
+## Analysis
+
+
+
+
+## Limitations
+
+Several limitations must be acknowledged. First, the analysis operates at the municipal aggregate level, meaning observed associations between income and renewable heating adoption cannot be attributed to individual households. The relevant financial capacity for the heating investment decisiInon is that of the building owner, not the average municipal resident. Second, the GWR heating entries are of limited reliability: as shown in Figure 1, approximately 50% of building entries are flagged as low quality. Third, the analysis does not account for cantonal subsidy heterogeneity beyond the fixed effects included in the model.
