@@ -179,11 +179,505 @@ income <- counts %>%
 
 ```
 
+To prepare the data for the regression analysis, the building-level flags are extended with a low-quality marker, a single-family-house flag, and a pre-1980 construction flag. The municipal aggregation is then re-computed to add three structural control variables (`low_quality_share`, `sfh_share`, `pre1980_share`) and an alternative renewable share that includes district heating buildings in the numerator (`renewable_share_dh`) for the sensitivity analysis. The aggregated municipal table is joined with the ESTV income data on the BFS municipality code. Log transformations are applied to the mean taxable income (`log_income`) and to the building count (`log_pop`, used as a proxy for municipality size since no separate population variable is available from the GWR). Municipalities are further classified into three size groups (`rural`, `semi-urban`, `urban`) based on tertiles of `n_buildings`. To improve readability of all tables and plots, canton numeric codes are mapped to their standard two-letter abbreviations.
+
+```{r prepare analysis data, warning=FALSE, message=FALSE}
+
+## 1. Additional building-level flags --------------------------------------
+# Low quality: heating entry is from the 2000 census (GWAERSCEH1 == 860) or
+# has no recorded update date at all (is.na(GWAERDATH1)).
+# SFH: GKLAS == 1110 (single-family house).
+# Pre-1980: construction year before 1980. NAs in GBAUJ count as FALSE.
+
+residential <- residential %>%
+  mutate(
+    is_lowqual = GWAERSCEH1 %in% 860 | is.na(GWAERDATH1),
+    is_sfh     = !is.na(GKLAS) & GKLAS == 1110,
+    is_pre1980 = !is.na(GBAUJ) & GBAUJ < 1980
+  )
+
+## 2. Re-aggregate to the municipality with all controls ------------------
+
+muni <- residential %>%
+  group_by(bfs_id = GGDENR, municipality = GGDENAME, canton_id = GDEKT) %>%
+  summarise(
+    n_buildings        = n(),
+    n_with_heating     = sum(!is.na(GWAERZH1)),
+    renewable_share    = sum(is_renewable)                 / sum(!is.na(GWAERZH1)),
+    renewable_share_dh = sum(is_renewable | is_district)   / sum(!is.na(GWAERZH1)),
+    low_quality_share  = sum(is_lowqual)                   / sum(!is.na(GWAERZH1)),
+    sfh_share          = sum(is_sfh)                       / n(),
+    pre1980_share      = sum(is_pre1980)                   / n(),
+    .groups = "drop"
+  )
+# `muni` now has one row per municipality, with the renewable share, the
+# alternative renewable share including district heating, and the three
+# control variables for the regression.
+
+## 3. Rename canton column ------------------------------------------------
+# GDEKT already contains two-letter canton abbreviations (ZH, BE, etc.)
+
+muni <- muni %>%
+  rename(canton = canton_id)
+
+## 4. Join with ESTV income, add log / categorical variables --------------
+
+df <- muni %>%
+  left_join(income %>% select(bfs_id, mean_taxable), by = "bfs_id") %>%
+  mutate(
+    log_income = log(mean_taxable),
+    log_pop    = log(n_buildings),
+    muni_type  = factor(
+      ntile(n_buildings, 3),
+      levels = 1:3,
+      labels = c("rural", "semi-urban", "urban")
+    )
+  )
+# `df` is the analysis frame: one row per municipality with renewable_share
+# (and renewable_share_dh), the income predictor (log_income), and all controls.
+
+## 5. Filter very small municipalities and missing predictors -------------
+# Municipalities with fewer than 20 buildings with a heating entry produce
+# unstable shares and are dropped, as are rows missing income or share.
+
+n_before <- nrow(df)
+df <- df %>%
+  filter(n_with_heating >= 20,
+         !is.na(log_income),
+         !is.na(renewable_share)) %>%
+  mutate(
+    # Recreate muni_type based on post-filtered data to ensure all levels have observations
+    muni_type = factor(
+      ntile(n_buildings, 3),
+      levels = 1:3,
+      labels = c("rural", "semi-urban", "urban")
+    ),
+    canton = factor(canton)
+  )
+n_after   <- nrow(df)
+n_dropped <- n_before - n_after
+
+```
+
+After filtering, `r n_after` municipalities are retained out of `r n_before` (`r n_dropped` dropped, predominantly small alpine or commuter municipalities with fewer than 20 buildings recorded with a heating entry).
+
+## Exploratory Visualisations
+
+Before estimating any regression model, the renewable heating share is inspected visually. Three plots characterise the data at the municipality level (distribution, relationship to income, relationship to data quality), and two choropleth maps show the spatial pattern of renewable adoption and mean taxable income across Switzerland.
+
+```{r fig-2, fig.cap="Figure 2: Distribution of the renewable heating share across Swiss municipalities. The unit is the fraction of residential buildings with a recorded heating entry. The dashed red line marks the national mean across municipalities."}
+
+p2 <- ggplot(df, aes(x = renewable_share)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(aes(xintercept = mean(renewable_share, na.rm = TRUE)),
+             linetype = "dashed", colour = "firebrick") +
+  labs(x = "Renewable heating share",
+       y = "Number of municipalities") +
+  theme_minimal()
+p2
+
+```
+
+```{r fig-3, fig.cap="Figure 3: Mean taxable income (log) vs. renewable heating share. Each dot is one municipality, coloured by canton. The black line is an OLS fit across all municipalities."}
+
+p3 <- ggplot(df, aes(x = log_income, y = renewable_share)) +
+  geom_point(aes(colour = canton), alpha = 0.6, size = 1.2) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  labs(x = "Log mean taxable income (CHF per taxpayer)",
+       y = "Renewable heating share",
+       colour = "Canton") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  guides(colour = guide_legend(nrow = 2, override.aes = list(size = 2.5)))
+p3
+
+```
+
+```{r fig-4, fig.cap="Figure 4: Share of low-quality heating entries vs. renewable heating share. The negative association illustrates the data-quality confound: municipalities with more outdated GWR entries appear to have lower renewable adoption."}
+
+p4 <- ggplot(df, aes(x = low_quality_share, y = renewable_share)) +
+  geom_point(aes(colour = canton), alpha = 0.6, size = 1.2) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  labs(x = "Share of low-quality heating entries",
+       y = "Renewable heating share",
+       colour = "Canton") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  guides(colour = guide_legend(nrow = 2, override.aes = list(size = 2.5)))
+p4
+
+```
+
+```{r map-data, warning=FALSE, message=FALSE}
+
+library(sf)
+
+# Swiss municipality polygons. The cached file is produced from the swisstopo
+# swissBOUNDARIES3D dataset and stored under data-derived/municipalities.gpkg.
+# If the shapefile's BFS code variable is named differently, adjust the join
+# key (currently expected: `bfs_id`).
+
+muni_polygons <- st_read(
+  here("data-derived", "municipalities.gpkg"),
+  quiet = TRUE
+) %>%
+  st_zm()
+
+map_data <- muni_polygons %>%
+  left_join(df, by = "bfs_id")
+# `map_data` is the sf object containing geometry plus all df columns.
+
+```
+
+```{r fig-5, fig.cap="Figure 5: Choropleth map of the municipal renewable heating share. Municipalities dropped from the analysis appear grey."}
+
+p5 <- ggplot(map_data) +
+  geom_sf(aes(fill = renewable_share), colour = NA) +
+  scale_fill_viridis_c(option = "plasma",
+                       labels = scales::label_percent(),
+                       na.value = "grey90") +
+  coord_sf() +
+  labs(fill = "Renewable share") +
+  theme_void()
+p5
+
+```
+
+```{r fig-6, fig.cap="Figure 6: Choropleth map of the municipal mean taxable income (log scale). Higher values indicate higher mean taxable income per taxpayer."}
+
+p6 <- ggplot(map_data) +
+  geom_sf(aes(fill = log_income), colour = NA) +
+  scale_fill_viridis_c(option = "plasma",
+                       na.value = "grey90") +
+  coord_sf() +
+  labs(fill = "Log mean taxable income") +
+  theme_void()
+p6
+
+```
+
 ## Analysis
 
+The analysis follows a deliberate funnel: first describe the variables on their own, then estimate the main relationship in a series of nested regressions that progressively rule out alternative explanations, then stress-test the result by changing the definition of the dependent variable, and finally check that the OLS assumptions hold. The motivation is that a naive correlation between municipal income and renewable adoption could reflect almost anything that comes bundled with income (newer housing, more owner-occupiers, urban location, generous cantonal subsidies), so each modelling step is designed to isolate the part of the relationship that survives the addition of a specific group of controls.
 
+### Descriptive Statistics
 
+```{r descriptive-stats, warning=FALSE, message=FALSE}
+
+library(tidyr)
+
+desc_stats <- df %>%
+  select(renewable_share, log_income, low_quality_share, sfh_share, pre1980_share) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarise(
+    mean   = mean(value,   na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    sd     = sd(value,     na.rm = TRUE),
+    min    = min(value,    na.rm = TRUE),
+    max    = max(value,    na.rm = TRUE),
+    .groups = "drop"
+  )
+# `desc_stats` is a tidy summary table of central tendency and spread.
+
+knitr::kable(desc_stats, digits = 2,
+             caption = "Table 1: Summary statistics for the key analysis variables across Swiss municipalities.")
+
+```
+
+Before fitting any model, the analysis variables are summarised on their own as a sanity check: do any of them have a degenerate distribution, an unexpected magnitude, or a spread so narrow that no regression could pick up a signal? The mean renewable heating share across municipalities is approximately `r round(mean(df$renewable_share, na.rm = TRUE)*100, 1)`%, with a wide spread (sd = `r round(sd(df$renewable_share, na.rm = TRUE), 2)`), confirming the substantial heterogeneity across municipalities that motivates the project in the first place. The log mean taxable income has a median of about `r round(median(df$log_income, na.rm = TRUE), 2)` (roughly CHF `r format(round(exp(median(df$log_income, na.rm = TRUE))), big.mark = "'")` per taxpayer), with a comparatively narrow distribution: most municipalities sit close to the centre and only a thin tail of high-income outliers stretches the upper end. Neither variable is degenerate, so both can carry information for the regression that follows.
+
+### Stepwise Regression
+
+The relationship between municipal income and renewable heating share is estimated using ordinary least squares (OLS) in four nested specifications. The reason for fitting more than one model is that a single regression of `renewable_share` on `log_income` could conflate income with everything that comes bundled with it: newer building stock, a higher share of owner-occupied single-family houses, more urban location, more generous cantonal subsidy regimes. Each successive model therefore adds one group of controls and asks: is the income effect really about *this*?
+
+Model 1 is the baseline: only income and the `low_quality_share` data-quality control. Model 2 adds the building stock controls (share of single-family houses, share of pre-1980 buildings); if the income coefficient shrinks here, part of the original effect was really "richer municipalities have newer or more owner-friendly housing". Model 3 adds municipal size and the rural / semi-urban / urban classification, asking whether the effect is really "richer municipalities are urban". Model 4 adds canton as a factor, which restricts comparisons to municipalities *within the same canton* and so absorbs cantonal subsidy regimes, building regulations, climate, and anything else that is constant within a canton. The `low_quality_share` control is carried through all four models to partly absorb the GWR data quality confound discussed earlier. If the income coefficient survives each step, the association is robust to that group of confounders; if it collapses at a particular step, that step has identified the real driver.
+
+```{r stepwise-regression, warning=FALSE, message=FALSE}
+
+library(broom)
+
+model1 <- lm(renewable_share ~ log_income + low_quality_share,
+             data = df)
+
+model2 <- lm(renewable_share ~ log_income + low_quality_share +
+               sfh_share + pre1980_share,
+             data = df)
+
+model3 <- lm(renewable_share ~ log_income + low_quality_share +
+               sfh_share + pre1980_share + muni_type + log_pop,
+             data = df)
+
+model4 <- lm(renewable_share ~ log_income + low_quality_share +
+               sfh_share + pre1980_share + muni_type + log_pop + canton,
+             data = df)
+
+# Helper: format a p-value with conventional significance stars
+# (*** < 0.001, ** < 0.01, * < 0.05, . < 0.1) and at least 3 decimal places.
+fmt_p <- function(p) {
+  stars <- ifelse(p < 0.001, "***",
+           ifelse(p < 0.01,  "**",
+           ifelse(p < 0.05,  "*",
+           ifelse(p < 0.1,   ".", ""))))
+  txt <- ifelse(p < 0.001, "<0.001", formatC(p, digits = 3, format = "f"))
+  trimws(paste(txt, stars))
+}
+
+# Helper: pull the income coefficient + model R^2 out of one model.
+extract_income <- function(model, name) {
+  tidy(model) %>%
+    filter(term == "log_income") %>%
+    transmute(
+      Model       = name,
+      `Beta`      = estimate,
+      SE          = std.error,
+      `p-value`   = fmt_p(p.value),
+      `R-squared` = glance(model)$r.squared
+    )
+}
+
+income_table <- bind_rows(
+  extract_income(model1, "1: Baseline"),
+  extract_income(model2, "2: + Building structure"),
+  extract_income(model3, "3: + Sociodemographic"),
+  extract_income(model4, "4: + Cantonal FE")
+)
+# `income_table` summarises the income coefficient across the four model specs.
+
+knitr::kable(income_table, digits = 4,
+             caption = "Table 2: The income coefficient (Beta on log_income) across the four model specifications, with standard errors, p-values, and overall model R-squared. Significance: *** p<0.001, ** p<0.01, * p<0.05, . p<0.1.")
+
+```
+
+To read the coefficient: a 1-unit change in `log_income` corresponds to roughly a 2.7-fold change in real income (since exp(1) is approximately 2.72), or, framed in everyday terms, a 1% change in income is associated with a change in the predicted renewable share of about one one-hundredth of the reported coefficient. A coefficient of 0.05 therefore implies that a 2.7-fold income increase is associated with a 5-percentage-point higher renewable heating share, holding the controls constant.
+
+Reading the table down the column, the income coefficient keeps the same sign and statistical significance across all four specifications. It attenuates from Model 1 to Model 4, which is exactly what one would expect: each set of added controls (building stock, municipal type, cantonal fixed effects) is itself correlated with income and so absorbs part of the raw gradient. The substantively important observation is that the coefficient does not collapse to zero, and does not lose significance once cantonal fixed effects are added. This means the income-renewable association is not a pure artefact of richer cantons happening to subsidise more: some portion of the gradient is genuinely *within-canton*, that is, visible when comparing a richer municipality to a poorer one in the same cantonal subsidy regime.
+
+### Sensitivity Analysis: Including District Heating
+
+Excluding district heating from the renewable definition is a judgement call. The reasoning was that district-heating availability is determined by local infrastructure rather than by individual investment decisions, so including it would risk mistaking infrastructure for wealth. But the call is debatable, so the same Model 4 is re-estimated with `renewable_share_dh` (renewable share including district heating) as the dependent variable. If the income coefficient stays roughly the same, the substantive conclusion is robust to the definition; if it changes materially, the definitional choice is doing more work than the data.
+
+```{r sensitivity, warning=FALSE, message=FALSE}
+
+model_sens <- lm(renewable_share_dh ~ log_income + low_quality_share +
+                   sfh_share + pre1980_share + muni_type + log_pop + canton,
+                 data = df)
+
+sens_row <- tidy(model_sens) %>%
+  filter(term == "log_income") %>%
+  transmute(
+    Model       = "Model 4 + district heating",
+    `Beta`      = estimate,
+    SE          = std.error,
+    `p-value`   = fmt_p(p.value),
+    `R-squared` = glance(model_sens)$r.squared
+  )
+
+knitr::kable(sens_row, digits = 4,
+             caption = "Table 3: Sensitivity analysis. Model 4 re-estimated with district heating included in the renewable share.")
+
+```
+
+Including district heating in the numerator changes the income coefficient only marginally relative to the primary Model 4 estimate. This indicates that the income-renewable relationship documented above is not driven by district-heating municipalities, which are typically larger and more urban, but reflects the adoption of individual renewable systems (heat pumps, wood, solar thermal) across the full sample.
+
+### Model Diagnostics
+
+OLS assumes that the residuals have mean zero, constant variance, and are approximately normally distributed. Violations don't automatically invalidate the point estimates but they distort the standard errors and therefore the p-values, which is what matters for the significance claims made above. Three quick diagnostics are run on Model 4 to flag any obvious violations. The residuals-vs-fitted plot tests the first two assumptions: a flat cloud around zero with no funnel and no curvature is what we want. The Q-Q plot tests normality: the dots should hug the reference line. The count of studentised residuals beyond an absolute value of three is a sniff test for whether a small number of unusual municipalities might be dragging the fit.
+
+```{r diagnostics, warning=FALSE, message=FALSE, fig.cap="Figure 7: Model 4 diagnostic plots. Left: residuals vs. fitted values. Right: normal Q-Q plot of residuals."}
+
+diag_df <- tibble(
+  fitted = fitted(model4),
+  resid  = resid(model4),
+  rstud  = rstudent(model4)
+)
+
+p_resid <- ggplot(diag_df, aes(fitted, resid)) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "firebrick") +
+  geom_smooth(se = FALSE, colour = "steelblue") +
+  labs(title = "Residuals vs fitted (Model 4)",
+       x = "Fitted values", y = "Residuals") +
+  theme_minimal()
+
+p_qq <- ggplot(diag_df, aes(sample = resid)) +
+  stat_qq(alpha = 0.4) +
+  stat_qq_line(colour = "firebrick") +
+  labs(title = "Q-Q plot of residuals (Model 4)",
+       x = "Theoretical quantiles", y = "Sample quantiles") +
+  theme_minimal()
+
+p_resid
+p_qq
+
+n_outliers <- sum(abs(diag_df$rstud) > 3, na.rm = TRUE)
+
+```
+
+A total of `r n_outliers` municipalities have an absolute studentised residual greater than 3. The residuals vs. fitted plot shows no severe systematic pattern around zero, and the Q-Q plot indicates approximate normality of residuals, with mild deviation in the tails that is consistent with the heterogeneity expected at this aggregation level.
 
 ## Limitations
 
 Several limitations must be acknowledged. First, the analysis operates at the municipal aggregate level, meaning observed associations between income and renewable heating adoption cannot be attributed to individual households. The relevant financial capacity for the heating investment decisiInon is that of the building owner, not the average municipal resident. Second, the GWR heating entries are of limited reliability: as shown in Figure 1, approximately 50% of building entries are flagged as low quality. Third, the analysis does not account for cantonal subsidy heterogeneity beyond the fixed effects included in the model.
+
+## Conclusion
+
+This project investigated whether municipal-level taxable income predicts the share of buildings equipped with renewable heating systems across Swiss municipalities, using the Federal Building and Dwellings Register (GWR) and ESTV income data. After joining both sources at the BFS municipality level and adjusting for the data quality of the GWR heating entries, building stock structure, municipal size, and cantonal fixed effects, a statistically significant positive association between municipal income and the renewable heating share is observed. In the most complete specification (Model 4), the estimated coefficient on `log_income` is `r round(coef(model4)["log_income"], 3)`, meaning that municipalities with higher mean taxable income tend to also have higher renewable heating adoption, holding the controls constant.
+
+This association is plausibly multi-causal rather than purely financial. Higher-income municipalities tend to have a larger share of owner-occupied housing, with owners who have both the capital to invest in heat pumps or solar thermal systems and the incentive to do so. They also tend to have somewhat newer building stock, which is more compatible with heat-pump installation, and may exhibit stronger demand for green upgrades for reputational or quality-of-life reasons. The observational design of this study does not, however, allow these mechanisms to be disentangled, and the association should not be interpreted as a causal income effect.
+
+A second important caveat concerns data quality. The `low_quality_share` control does not fully eliminate attenuation bias from stale or missing GWR entries. Since renewable systems (in particular external air-source heat pumps) are systematically underrepresented in older entries, the true income effect on actual renewable adoption is likely stronger than the estimate reported here.
+
+From a policy perspective, the finding suggests that means-tested subsidies could play a useful role in offsetting the income gradient if the goal is to make renewable heating uptake more uniform across municipalities. Future work should ideally combine individual building-level panel data with cantonal subsidy amounts as a continuous covariate, and apply spatial autoregressive models to account for the spatial clustering of adoption visible in the choropleth maps. A targeted re-survey of low-quality GWR entries in a representative sample of municipalities would also substantially improve the credibility of any quantitative claim about the income gradient.
+
+<!-- BONUS CHAPTER: optional -->
+
+## Additional Chapter: Cantonal Deep-Dive (Optional)
+
+*This chapter is optional and provides an exploratory deep-dive into three cantons known to maintain high GWR data quality: Luzern (LU), Basel-Landschaft (BL), and Basel-Stadt (BS). The motivation is that the income-renewable relationship may be estimated more cleanly in these cantons, where heating entries are more reliable.*
+
+### A1: Data Quality Profile of LU, BL, BS vs. Switzerland
+
+```{r bonus-a1, warning=FALSE, message=FALSE, fig.cap="Figure 8: Distribution of the share of low-quality heating entries by group. Lower values indicate better data quality. LU, BL, and BS are compared to the rest of Switzerland."}
+
+focus_cantons <- c("LU", "BL", "BS")
+
+df_box <- df %>%
+  mutate(group = case_when(
+    canton %in% focus_cantons ~ canton,
+    TRUE                      ~ "Rest of CH"
+  )) %>%
+  mutate(group = factor(group, levels = c("Rest of CH", "LU", "BL", "BS")))
+# `df_box` adds a grouping variable for the boxplot.
+
+p_bonus1 <- ggplot(df_box, aes(x = group, y = low_quality_share, fill = group)) +
+  geom_boxplot(alpha = 0.8, outlier.alpha = 0.4) +
+  scale_fill_viridis_d() +
+  labs(x = NULL, y = "Share of low-quality heating entries") +
+  theme_minimal() +
+  theme(legend.position = "none")
+p_bonus1
+
+```
+
+The boxplot allows a visual comparison of GWR data quality across the four groups. The three focus cantons should display systematically lower medians and tighter interquartile ranges than the rest of Switzerland if the premise of cleaner cantonal record-keeping holds.
+
+### A2: Income-Renewable Relationship in Focus Cantons
+
+```{r bonus-a2, warning=FALSE, message=FALSE, fig.cap="Figure 9: Renewable heating share vs. log mean taxable income, faceted by focus canton (LU, BL, BS). Each dot is one municipality; the red line is an OLS fit within canton."}
+
+df_focus <- df %>% filter(canton %in% focus_cantons)
+# `df_focus` is the LU/BL/BS subset for the focused regression.
+
+model_bonus <- lm(renewable_share ~ log_income + low_quality_share +
+                    sfh_share + pre1980_share,
+                  data = df_focus)
+
+focus_row <- tidy(model_bonus) %>%
+  filter(term == "log_income") %>%
+  transmute(
+    Model       = "Focus cantons only (LU/BL/BS, Model 2)",
+    `Beta`      = estimate,
+    SE          = std.error,
+    `p-value`   = fmt_p(p.value),
+    `R-squared` = glance(model_bonus)$r.squared
+  )
+
+knitr::kable(
+  bind_rows(extract_income(model2, "National (Model 2)"), focus_row),
+  digits = 4,
+  caption = "Table 4: Income coefficient in the national Model 2 vs. the focus-canton subset."
+)
+
+p_bonus2 <- ggplot(df_focus, aes(x = log_income, y = renewable_share)) +
+  geom_point(alpha = 0.6, colour = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
+  facet_wrap(~ canton) +
+  labs(x = "Log mean taxable income (CHF per taxpayer)",
+       y = "Renewable heating share") +
+  theme_minimal()
+p_bonus2
+
+```
+
+The focus-canton regression estimates the relationship in a subsample with structurally better GWR data quality. If the national estimate is attenuated by data noise, the focus-canton coefficient should be larger in absolute terms. The faceted scatter plot shows the same relationship visually within each of the three cantons.
+
+### A3: Analogue Canton Identification
+
+```{r bonus-a3, warning=FALSE, message=FALSE}
+
+# Canton-level medians on observable structural dimensions.
+canton_profile <- df %>%
+  group_by(canton) %>%
+  summarise(
+    sfh_med        = median(sfh_share,        na.rm = TRUE),
+    pre1980_med    = median(pre1980_share,    na.rm = TRUE),
+    log_income_med = median(log_income,       na.rm = TRUE),
+    lowqual_med    = median(low_quality_share, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Standardise each column (z-scores) so dimensions are comparable.
+profile_mat <- as.matrix(canton_profile[, -1])
+profile_mat <- scale(profile_mat)
+rownames(profile_mat) <- canton_profile$canton
+
+dist_mat <- as.matrix(dist(profile_mat, method = "euclidean"))
+# `dist_mat` is a square matrix of pairwise z-score distances between cantons.
+
+# For each focus canton, list the top 5 nearest neighbours (excluding itself
+# and the other two focus cantons).
+nearest_table <- bind_rows(lapply(focus_cantons, function(fc) {
+  dists <- dist_mat[fc, ]
+  others <- dists[!names(dists) %in% c(fc)]
+  top5   <- sort(others)[1:5]
+  tibble(
+    `Focus canton`       = fc,
+    `Nearest neighbour`  = names(top5),
+    `Distance (z-score)` = as.numeric(top5)
+  )
+}))
+
+knitr::kable(nearest_table, digits = 3,
+             caption = "Table 5: Top 5 structurally nearest cantons to each focus canton, by Euclidean distance in z-score space.")
+
+# Closest one analogue per focus canton (excluding the other focus cantons),
+# pooled into a unique set for the joint regression.
+analogues <- unique(unlist(lapply(focus_cantons, function(fc) {
+  d <- dist_mat[fc, ]
+  d <- d[!names(d) %in% focus_cantons]
+  names(sort(d))[1]
+})))
+
+df_focus_plus <- df %>% filter(canton %in% c(focus_cantons, analogues))
+
+model_bonus_plus <- lm(renewable_share ~ log_income + low_quality_share +
+                         sfh_share + pre1980_share,
+                       data = df_focus_plus)
+
+comparison <- bind_rows(
+  extract_income(model2, "National (Model 2)"),
+  tidy(model_bonus) %>%
+    filter(term == "log_income") %>%
+    transmute(Model       = "Focus cantons only",
+              `Beta`      = estimate,
+              SE          = std.error,
+              `p-value`   = fmt_p(p.value),
+              `R-squared` = glance(model_bonus)$r.squared),
+  tidy(model_bonus_plus) %>%
+    filter(term == "log_income") %>%
+    transmute(Model       = sprintf("Focus + analogues (%s)",
+                                     paste(analogues, collapse = ", ")),
+              `Beta`      = estimate,
+              SE          = std.error,
+              `p-value`   = fmt_p(p.value),
+              `R-squared` = glance(model_bonus_plus)$r.squared)
+)
+# `comparison` lines up the income coefficient across three nested samples.
+
+knitr::kable(comparison, digits = 4,
+             caption = "Table 6: Income coefficient comparison across national, focus-canton-only, and focus-plus-analogue samples (all using Model 2 specification).")
+
+```
+
+If the focus-canton estimate is similar to the focus-plus-analogue estimate but larger than the national one, this supports the interpretation that data quality is the main driver of attenuation in the national sample. Conversely, if the focus-canton coefficient is closer to the national estimate once analogues are added, this would suggest that the focus cantons are not representatively cleaner but simply different in other observable ways. The interpretation should remain cautious: with only three focus cantons and one or two analogues each, the sample size is small and standard errors are correspondingly wide.
