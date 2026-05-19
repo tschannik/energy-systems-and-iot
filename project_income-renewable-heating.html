@@ -1935,11 +1935,16 @@ fewer than 20 buildings recorded with a heating entry).</p>
 </div>
 <div id="exploratory-visualisations" class="section level2">
 <h2>Exploratory Visualisations</h2>
-<p>Before estimating any regression model, the renewable heating share
-is inspected visually. Three plots characterise the data at the
-municipality level (distribution, relationship to income, relationship
-to data quality), and two choropleth maps show the spatial pattern of
-renewable adoption and mean taxable income across Switzerland.</p>
+<p>Before estimating any regression model, the analytical data is
+explored visually. The five figures below answer four questions in
+order: (i) does the municipal renewable share have enough variance to be
+worth modelling, (ii) does municipal income visibly co-move with the
+renewable share in the raw data, (iii) is the GWR data-quality concern
+visible at the municipal level, and (iv) do the two spatial patterns
+(income and renewable adoption) look similar or different across
+Switzerland? The point is to build intuition for the data before any
+model is fit, so the regression results can be sanity-checked against
+the visual evidence.</p>
 <pre class="r"><code>p2 &lt;- ggplot(df, aes(x = renewable_share)) +
   geom_histogram(bins = 40, fill = &quot;steelblue&quot;, colour = &quot;white&quot;) +
   geom_vline(aes(xintercept = mean(renewable_share, na.rm = TRUE)),
@@ -1957,6 +1962,14 @@ recorded heating entry. The dashed red line marks the national mean
 across municipalities.
 </p>
 </div>
+<p>The histogram in Figure 2 confirms that the renewable share is far
+from degenerate. Municipal values range from roughly 1% to 94%, with the
+national mean (dashed red line) at about 28.7% and the median at 25.6%.
+The bulk of the distribution sits below the mean, with a tail of
+municipalities at higher renewable shares pulling the mean upwards. This
+skew is consistent with renewable adoption being concentrated in a
+subset of municipalities rather than spread uniformly, which is exactly
+the heterogeneity the regression is intended to explain.</p>
 <pre class="r"><code>p3 &lt;- ggplot(df, aes(x = log_income, y = renewable_share)) +
   geom_point(aes(colour = canton), alpha = 0.6, size = 1.2) +
   geom_smooth(method = &quot;lm&quot;, se = FALSE, colour = &quot;black&quot;) +
@@ -1976,6 +1989,20 @@ dot is one municipality, coloured by canton. The black line is an OLS
 fit across all municipalities.
 </p>
 </div>
+<p>Figure 3 is the key descriptive figure for the main research
+question, and it is already surprising. The black OLS line summarises
+the raw bivariate relationship between log income and the renewable
+share before any controls are added, and the slope is clearly
+<em>negative</em>: higher-income municipalities tend to have a
+<em>lower</em> renewable heating share. This runs against the simple
+“more money, more green investment” intuition the project started from,
+and the rest of the analysis is about figuring out whether this negative
+gradient is a genuine within-canton effect or an artefact of urban-rural
+sorting. The colour coding by canton helps see whether the pattern is
+driven by a few outlier cantons or holds broadly across the country, and
+a handful of cantons cluster visibly above or below the line, which is
+exactly the kind of cantonal heterogeneity that motivates the Model 4
+fixed-effects specification.</p>
 <pre class="r"><code>p4 &lt;- ggplot(df, aes(x = low_quality_share, y = renewable_share)) +
   geom_point(aes(colour = canton), alpha = 0.6, size = 1.2) +
   geom_smooth(method = &quot;lm&quot;, se = FALSE, colour = &quot;black&quot;) +
@@ -1996,6 +2023,21 @@ municipalities with more outdated GWR entries appear to have lower
 renewable adoption.
 </p>
 </div>
+<p>Figure 4 examines the GWR data-quality concern at the municipal
+level. The OLS line is close to flat, which means the data-quality
+confound is much weaker at this aggregation than the existing literature
+would suggest: at the municipal level there is no strong evidence that
+municipalities with stale entries systematically report lower renewable
+shares. Two structural features are still visible. First, the leftmost
+vertical column of points at <code>low_quality_share</code> near zero
+corresponds to a small set of municipalities (largely the canton of
+Basel-Stadt and a few cantons that maintain records actively); within
+that column the renewable share itself varies widely. Second, the rest
+of the cloud is wide and overlapping, with no clear monotone trend. The
+conservative read is therefore that <code>low_quality_share</code> is
+best kept as a control to absorb residual noise, even though it does not
+visibly dominate the income-renewable relationship the way one might
+have feared.</p>
 <pre class="r"><code>library(sf)
 
 # Swiss municipality polygons. The cached file is produced from the swisstopo
@@ -2012,6 +2054,9 @@ muni_polygons &lt;- st_read(
 map_data &lt;- muni_polygons %&gt;%
   left_join(df, by = &quot;bfs_id&quot;)
 # `map_data` is the sf object containing geometry plus all df columns.</code></pre>
+<p>Figures 5 and 6 then move from the scatter view to the spatial view.
+They show the same data twice, once shaded by renewable adoption and
+once by mean taxable income, so they can be read in parallel.</p>
 <pre class="r"><code>p5 &lt;- ggplot(map_data) +
   geom_sf(aes(fill = renewable_share), colour = NA) +
   scale_fill_viridis_c(option = &quot;plasma&quot;,
@@ -2043,20 +2088,43 @@ Figure 6: Choropleth map of the municipal mean taxable income (log
 scale). Higher values indicate higher mean taxable income per taxpayer.
 </p>
 </div>
+<p>Comparing the two maps gives the spatial analogue of the negative
+slope in Figure 3, and the inversion is visible at a glance. The bright
+(high-income) areas in Figure 6 cluster around the Zürich-Zug-Schwyz
+axis and around the Genfersee, that is, the urban Mittelland. The bright
+(high-renewable) areas in Figure 5, by contrast, sit in central and
+Alpine cantons (parts of Bern, the inner Cantons, Graubünden, Wallis)
+and in some peri-urban rural belts, that is, exactly the places where
+Figure 6 is darker. The mechanical reading: urban high-income
+municipalities tend to have district heating, multi-family stock, and
+older protected building cores that are harder to convert; Alpine and
+rural municipalities have more single-family houses and a long tradition
+of wood heating, both of which lift the renewable share. This
+urban-rural sorting is precisely what makes the bivariate income slope
+look negative, and is what the cantonal fixed effects in Model 4 are
+partly trying to absorb. Grey municipalities are those dropped by the
+<code>n_with_heating &gt;= 20</code> filter or absent from the polygon
+vintage, and should not be over-interpreted.</p>
 </div>
 <div id="analysis" class="section level2">
 <h2>Analysis</h2>
-<p>The analysis follows a deliberate funnel: first describe the
-variables on their own, then estimate the main relationship in a series
-of nested regressions that progressively rule out alternative
-explanations, then stress-test the result by changing the definition of
-the dependent variable, and finally check that the OLS assumptions hold.
-The motivation is that a naive correlation between municipal income and
-renewable adoption could reflect almost anything that comes bundled with
-income (newer housing, more owner-occupiers, urban location, generous
-cantonal subsidies), so each modelling step is designed to isolate the
-part of the relationship that survives the addition of a specific group
-of controls.</p>
+<p>The analysis follows a deliberate funnel: building on the visual
+exploration above (in particular the <em>negative</em> bivariate slope
+in Figure 3 and the surprisingly weak data-quality association in Figure
+4), the relationship is now quantified in a series of nested regressions
+that progressively rule out alternative explanations, then stress-tested
+by changing the definition of the dependent variable, and finally
+checked against the OLS assumptions. The motivation is that the negative
+correlation between municipal income and renewable adoption could
+reflect almost anything that comes bundled with income at the municipal
+level (older urban building stock, more multi-family housing, more
+district heating, cantonal subsidy regimes), so each modelling step is
+designed to isolate the part of the relationship that survives the
+addition of a specific group of controls.</p>
+<p>(Note: no random operations are used in this analysis. The tertile
+cut points for <code>muni_type</code> use the deterministic
+<code>dplyr::ntile()</code>, so a <code>set.seed()</code> call would
+have no effect and is omitted.)</p>
 <div id="descriptive-statistics" class="section level3">
 <h3>Descriptive Statistics</h3>
 <pre class="r"><code>library(tidyr)
@@ -2272,23 +2340,30 @@ p&lt;0.05, . p&lt;0.1.</caption>
 <p>To read the coefficient: a 1-unit change in <code>log_income</code>
 corresponds to roughly a 2.7-fold change in real income (since exp(1) is
 approximately 2.72), or, framed in everyday terms, a 1% change in income
-is associated with a change in the predicted renewable share of about
-one one-hundredth of the reported coefficient. A coefficient of 0.05
-therefore implies that a 2.7-fold income increase is associated with a
-5-percentage-point higher renewable heating share, holding the controls
-constant.</p>
-<p>Reading the table down the column, the income coefficient keeps the
-same sign and statistical significance across all four specifications.
-It attenuates from Model 1 to Model 4, which is exactly what one would
-expect: each set of added controls (building stock, municipal type,
-cantonal fixed effects) is itself correlated with income and so absorbs
-part of the raw gradient. The substantively important observation is
-that the coefficient does not collapse to zero, and does not lose
-significance once cantonal fixed effects are added. This means the
-income-renewable association is not a pure artefact of richer cantons
-happening to subsidise more: some portion of the gradient is genuinely
-<em>within-canton</em>, that is, visible when comparing a richer
-municipality to a poorer one in the same cantonal subsidy regime.</p>
+shifts the predicted renewable share by about one one-hundredth of the
+reported coefficient. The Model 4 coefficient of approximately -0.173
+therefore implies that a 2.7-fold increase in municipal mean taxable
+income is associated with a renewable heating share that is roughly 17
+percentage points <em>lower</em>, holding the controls constant. (Note
+the units: <code>renewable_share</code> is a fraction between 0 and 1,
+so a coefficient of -0.17 means -17 percentage points.)</p>
+<p>Reading the table down the column, the income coefficient is negative
+and highly significant in every specification, with the same sign
+throughout. It attenuates substantially between Model 3 and Model 4
+(from roughly -0.28 to -0.17, a drop of about 40%), which means cantonal
+fixed effects absorb a meaningful portion of the gradient: some of the
+apparent negative relationship between income and renewable adoption is
+in fact a between-canton effect, where higher-income cantons happen to
+have heating regimes (district heating, multi-family urban stock) that
+lower the renewable share. The substantively important observation is
+that the coefficient does not collapse to zero or lose significance once
+those cantonal differences are absorbed. A meaningful negative gradient
+persists <em>within-canton</em> as well: comparing two municipalities in
+the same canton, the richer one tends to have a lower renewable heating
+share. This is the opposite of the simple “more money, more green
+investment” hypothesis the project started from, and section
+<em>Conclusion</em> below discusses why the aggregate-level pattern can
+flip in this way.</p>
 </div>
 <div id="sensitivity-analysis-including-district-heating" class="section level3">
 <h3>Sensitivity Analysis: Including District Heating</h3>
@@ -2411,7 +2486,7 @@ heterogeneity expected at this aggregation level.</p>
 operates at the municipal aggregate level, meaning observed associations
 between income and renewable heating adoption cannot be attributed to
 individual households. The relevant financial capacity for the heating
-investment decisiInon is that of the building owner, not the average
+investment decision is that of the building owner, not the average
 municipal resident. Second, the GWR heating entries are of limited
 reliability: as shown in Figure 1, approximately 50% of building entries
 are flagged as low quality. Third, the analysis does not account for
@@ -2423,42 +2498,64 @@ model.</p>
 <p>This project investigated whether municipal-level taxable income
 predicts the share of buildings equipped with renewable heating systems
 across Swiss municipalities, using the Federal Building and Dwellings
-Register (GWR) and ESTV income data. After joining both sources at the
-BFS municipality level and adjusting for the data quality of the GWR
-heating entries, building stock structure, municipal size, and cantonal
-fixed effects, a statistically significant positive association between
-municipal income and the renewable heating share is observed. In the
-most complete specification (Model 4), the estimated coefficient on
-<code>log_income</code> is -0.173, meaning that municipalities with
-higher mean taxable income tend to also have higher renewable heating
-adoption, holding the controls constant.</p>
-<p>This association is plausibly multi-causal rather than purely
-financial. Higher-income municipalities tend to have a larger share of
-owner-occupied housing, with owners who have both the capital to invest
-in heat pumps or solar thermal systems and the incentive to do so. They
-also tend to have somewhat newer building stock, which is more
-compatible with heat-pump installation, and may exhibit stronger demand
-for green upgrades for reputational or quality-of-life reasons. The
-observational design of this study does not, however, allow these
-mechanisms to be disentangled, and the association should not be
-interpreted as a causal income effect.</p>
+Register (GWR) and ESTV income data. The headline finding is the
+opposite of the project’s starting hypothesis. After joining both
+sources at the BFS municipality level and adjusting for GWR data
+quality, building stock structure, municipal size, and cantonal fixed
+effects, a statistically significant <em>negative</em> association is
+observed: higher-income municipalities tend to have <em>lower</em>
+renewable heating shares. In the most complete specification (Model 4),
+the coefficient on <code>log_income</code> is -0.173, which implies that
+a 2.7-fold increase in mean taxable income corresponds to a roughly
+17-percentage-point lower renewable heating share, holding the controls
+constant. The negative direction is robust to all four specifications
+and to including district heating in the renewable definition.</p>
+<p>The most plausible explanation is structural rather than financial,
+and is consistent with the spatial pattern visible in Figures 5 and 6.
+The income distribution across Swiss municipalities is dominated by an
+urban-rural gradient: the highest-income municipalities are concentrated
+in the Zürich-Zug axis and around the Genfersee, while the lowest-income
+municipalities are largely Alpine. Urban municipalities tend to have a
+higher share of multi-family buildings, older protected stock in city
+centres, and district heating infrastructure (excluded from the primary
+renewable definition), all of which structurally depress the share of
+buildings on individually installed renewable systems. Rural and Alpine
+municipalities, by contrast, have a long tradition of wood heating and a
+larger single-family-house share, both of which lift the renewable
+share. The municipal-level income coefficient therefore captures
+urban-rural sorting more than it captures household financial capacity,
+and the result is an aggregate-level (ecological) effect that should not
+be read as a household-level claim. A wealthy household within an urban
+municipality may well be more likely to install a heat pump than its
+poorer neighbour, but that within-household pattern is not what the
+municipal aggregation measures.</p>
 <p>A second important caveat concerns data quality. The
 <code>low_quality_share</code> control does not fully eliminate
-attenuation bias from stale or missing GWR entries. Since renewable
-systems (in particular external air-source heat pumps) are
-systematically underrepresented in older entries, the true income effect
-on actual renewable adoption is likely stronger than the estimate
-reported here.</p>
-<p>From a policy perspective, the finding suggests that means-tested
-subsidies could play a useful role in offsetting the income gradient if
-the goal is to make renewable heating uptake more uniform across
-municipalities. Future work should ideally combine individual
-building-level panel data with cantonal subsidy amounts as a continuous
-covariate, and apply spatial autoregressive models to account for the
-spatial clustering of adoption visible in the choropleth maps. A
-targeted re-survey of low-quality GWR entries in a representative sample
-of municipalities would also substantially improve the credibility of
-any quantitative claim about the income gradient.</p>
+attenuation bias from stale or missing GWR entries, although Figure 4
+suggests the confound is weaker at the municipal level than one might
+have feared. Since external air-source heat pumps are systematically
+underrepresented in stale entries, the true within-canton effect on
+actual renewable adoption is likely somewhat more muted than the
+headline coefficient suggests.</p>
+<p>From a policy perspective, the finding implies that the
+income-renewable gradient is the <em>wrong</em> axis on which to target
+subsidies. Means-tested subsidies aimed at low-income households would,
+given this evidence, be directed at municipalities that already have
+higher renewable shares, while urban high-income municipalities (where
+renewable adoption is structurally lower) would need a different policy
+instrument altogether: support for collective heat-pump installations in
+multi-family buildings, retrofit subsidies for historic stock, and
+integration with district heating decarbonisation programmes. The
+implication is not that wealth is irrelevant, but that the policy lever
+sits at the building-type and urban-form level, not at the income
+level.</p>
+<p>Future work should combine individual building-level panel data with
+cantonal subsidy amounts as a continuous covariate, and apply spatial
+autoregressive models to account for the spatial clustering of adoption
+visible in the choropleth maps. A targeted re-survey of low-quality GWR
+entries in a representative sample of municipalities would also
+substantially improve the credibility of any quantitative claim about
+the income gradient.</p>
 <!-- BONUS CHAPTER: optional -->
 </div>
 <div id="additional-chapter-cantonal-deep-dive-optional" class="section level2">
@@ -2577,10 +2674,12 @@ is an OLS fit within canton.
 </p>
 </div>
 <p>The focus-canton regression estimates the relationship in a subsample
-with structurally better GWR data quality. If the national estimate is
-attenuated by data noise, the focus-canton coefficient should be larger
-in absolute terms. The faceted scatter plot shows the same relationship
-visually within each of the three cantons.</p>
+with structurally better GWR data quality. The focus-canton coefficient
+(-0.307) is in fact slightly <em>more negative</em> than the national
+one (-0.293), which is consistent with attenuation by data noise in the
+full sample: with cleaner records, the negative income gradient is a
+touch sharper, not softer. The faceted scatter plot lets the same
+pattern be inspected canton by canton.</p>
 </div>
 <div id="a3-analogue-canton-identification" class="section level3">
 <h3>A3: Analogue Canton Identification</h3>
@@ -2786,16 +2885,19 @@ specification).</caption>
 </tr>
 </tbody>
 </table>
-<p>If the focus-canton estimate is similar to the focus-plus-analogue
-estimate but larger than the national one, this supports the
-interpretation that data quality is the main driver of attenuation in
-the national sample. Conversely, if the focus-canton coefficient is
-closer to the national estimate once analogues are added, this would
-suggest that the focus cantons are not representatively cleaner but
-simply different in other observable ways. The interpretation should
-remain cautious: with only three focus cantons and one or two analogues
-each, the sample size is small and standard errors are correspondingly
-wide.</p>
+<p>The three coefficients can now be read together. The
+focus-canton-only estimate (-0.307) is slightly more negative than the
+national one (-0.293), and once the closest structural analogue cantons
+(BE, VD, TI) are added the estimate moves back toward the national value
+(-0.251). Two readings are consistent with this pattern. First, with
+cleaner GWR data the negative income gradient is sharper rather than
+weaker, which means the national estimate is, if anything, biased toward
+zero by stale entries. Second, the focus cantons are not so structurally
+unique that they invalidate the national pattern: adding analogues
+nudges the coefficient back, but it does not change sign or
+significance. The interpretation should remain cautious: with only three
+focus cantons and one analogue each, the sample size is small and the
+standard errors are correspondingly wide.</p>
 </div>
 </div>
 
