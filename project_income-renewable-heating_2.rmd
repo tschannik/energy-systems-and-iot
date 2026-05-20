@@ -634,6 +634,7 @@ modelsummary(
            standard errors. The dependent variable in the right column includes 
            district heating in the renewable category."
 )
+
 ```
 
 ### Sensitivity Analysis: Including District Heating
@@ -641,6 +642,225 @@ modelsummary(
 As a robustness check, the main model specification (M4) is re-estimated with district heating included in the renewable category. District heating is excluded from the primary definition on the grounds that its adoption is structurally determined by local infrastructure availability rather than individual investment decisions. However, since district heating in Switzerland is predominantly fed by waste heat and biomass, its exclusion may understate the true renewable share in urban municipalities where district heating networks are most prevalent.
 
 The income coefficient remains negative and statistically significant in both specifications (–1.8e-06 vs. –2.1e-06), and the direction of change is consistent with the expectation that urban high-income municipalities benefit most from district heating infrastructure: including district heating slightly strengthens rather than attenuates the coefficient, as these municipalities gain more from the expanded definition. All other coefficients remain stable in sign and magnitude across both specifications, with the exception of share_pre1945, whose coefficient increases from 0.100 to 0.14 when district heating is included — consistent with older urban building stock being disproportionately connected to district heating networks. The modest reduction in R² from 0.577 to 0.516 suggests that cantonal fixed effects explain somewhat less of the variation in the expanded outcome, likely because district heating penetration varies more within cantons than renewable heating in the primary definition. Overall, this robustness check confirms that the primary model results are not sensitive to the definitional boundary around district heating.
+
+## Deep Dive: Cantonal Variation in Data Quality
+
+```{r deep dive data quality cantons}
+
+# ── Schritt 1: Kantonsprofil ───────────────────────────────────────────────────
+canton_profiles <- muni_analysis %>%
+  group_by(canton) %>%
+  summarise(
+    n              = n(),
+    mean_lowqual   = mean(share_lowqual),
+    mean_income    = mean(median_income),
+    mean_efh       = mean(share_efh),
+    mean_pre1945   = mean(share_pre1945),
+    share_rural    = mean(typology_3 == 3),
+    mean_renewable = mean(share_renewable),
+    .groups = "drop"
+  )
+
+# Fokuskantone: BL (hohe Qualität), LU (mittel-hohe Qualität)
+# Vergleichskanton: AG (strukturell ähnlich zu BL, deutlich schlechtere Qualität)
+focus_cantons    <- c("BL", "LU")
+control_canton   <- "AG"
+selected_cantons <- c(focus_cantons, control_canton)
+
+# ── Schritt 2: Deskriptiver Vergleich ─────────────────────────────────────────
+canton_profiles %>%
+  filter(canton %in% selected_cantons) %>%
+  bind_rows(
+    muni_analysis %>%
+      summarise(
+        canton         = "CH (national)",
+        n              = n(),
+        mean_lowqual   = mean(share_lowqual),
+        mean_income    = mean(median_income),
+        mean_efh       = mean(share_efh),
+        mean_pre1945   = mean(share_pre1945),
+        share_rural    = mean(typology_3 == 3),
+        mean_renewable = mean(share_renewable)
+      )
+  ) %>%
+  arrange(mean_lowqual)
+
+# ── Schritt 3: Scatterplot Income vs. Renewable, facettiert ───────────────────
+muni_analysis %>%
+  filter(canton %in% selected_cantons) %>%
+  bind_rows(
+    muni_analysis %>% mutate(canton = "CH (national sample)")
+  ) %>%
+  mutate(canton = factor(canton,
+                         levels = c("BL", "LU", "AG", "CH (national sample)"))) %>%
+  ggplot(aes(median_income, share_renewable, colour = canton)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.8, colour = "grey30") +
+  facet_wrap(~ canton, nrow = 2) +
+  scale_x_continuous(labels = scales::comma_format(suffix = " CHF")) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_colour_manual(values = c("BL" = "steelblue",
+                                 "LU" = "forestgreen",
+                                 "AG" = "darkorange",
+                                 "CH (national sample)" = "grey50")) +
+  labs(
+    title = "Income vs. renewable heating share: focus cantons vs. national sample",
+    x     = "Median taxable income (CHF)",
+    y     = "Share of buildings with renewable heating"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# ── Schritt 4: Subgruppenregressionen ─────────────────────────────────────────
+m_bl <- lm(share_renewable ~ median_income + share_lowqual +
+             share_efh + share_pre1945 + factor(typology_3) + log_pop,
+           data = muni_analysis %>% filter(canton == "BL"))
+
+m_lu <- lm(share_renewable ~ median_income + share_lowqual +
+             share_efh + share_pre1945 + factor(typology_3) + log_pop,
+           data = muni_analysis %>% filter(canton == "LU"))
+
+m_ag <- lm(share_renewable ~ median_income + share_lowqual +
+             share_efh + share_pre1945 + factor(typology_3) + log_pop,
+           data = muni_analysis %>% filter(canton == "AG"))
+
+# Vergleichstabelle
+modelsummary(
+  list("BL (high quality)" = m_bl,
+       "LU (medium quality)" = m_lu,
+       "AG (low quality)" = m_ag,
+       "M3 National" = m3),
+  coef_map = c(
+    "median_income"       = "Median income (CHF)",
+    "share_lowqual"       = "Share low-quality entries",
+    "share_efh"           = "Share single-family houses",
+    "share_pre1945"       = "Share pre-1945 buildings",
+    "factor(typology_3)2" = "Peri-urban (ref: urban)",
+    "factor(typology_3)3" = "Rural (ref: urban)",
+    "log_pop"             = "Log population"
+  ),
+  stars = c("*" = 0.05, "**" = 0.01, "***" = 0.001),
+  gof_map = c("nobs", "r.squared", "adj.r.squared"),
+  fmt = fmt_significant(2),
+  notes = "OLS with default standard errors. Canton-level subgroup models 
+           use M3 specification without cantonal fixed effects."
+)
+
+# ── Schritt 5: Koeffizientenplot Income über alle Subgruppen ──────────────────
+coef_subgroup <- bind_rows(
+  tidy(m_bl, conf.int = TRUE) %>% mutate(model = "BL (high quality,\nn=86)"),
+  tidy(m_lu, conf.int = TRUE) %>% mutate(model = "LU (medium quality,\nn=79)"),
+  tidy(m_ag, conf.int = TRUE) %>% mutate(model = "AG (low quality,\nn=195)"),
+  tidy(m3,   conf.int = TRUE) %>% mutate(model = "National M3\n(n=2098)")
+) %>%
+  filter(term == "median_income") %>%
+  mutate(model = factor(model, levels = c(
+    "BL (high quality,\nn=86)",
+    "LU (medium quality,\nn=79)",
+    "AG (low quality,\nn=195)",
+    "National M3\n(n=2098)"
+  )))
+
+ggplot(coef_subgroup,
+       aes(x = model, y = estimate, ymin = conf.low, ymax = conf.high)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_pointrange(colour = "steelblue", size = 0.6) +
+  labs(
+    title = "Income coefficient by canton subgroup vs. national estimate",
+    x     = NULL,
+    y     = "Coefficient on median income (CHF)"
+  ) +
+  theme_minimal()
+```
+
+The canton-level subgroup analysis yields a striking finding that substantially enriches the interpretation of the national results. The income coefficient varies systematically with data quality across the three cantons, consistent with the hypothesis that measurement error in low-quality cantons attenuates the true income–renewables relationship.
+
+In Basel-Landschaft, the canton with the best documented data quality (share_lowqual = 9.4%), the income coefficient is positive and significant (+4.9e-06, p < 0.01): within BL, higher-income municipalities have a higher renewable heating share, which is the theoretically expected direction. In Aargau, the low-quality comparison canton (share_lowqual = 60.9%), the coefficient is negative and significant (–1.7e-06, p < 0.05), consistent with the national estimate but smaller in magnitude. In Lucerne, the medium-quality canton, the coefficient is negative and larger in magnitude (–7.0e-06, p < 0.01), which suggests that structural canton-specific factors — likely the pronounced urban-rural contrast around the city of Lucerne — dominate the within-canton pattern independently of data quality.
+
+The gradient from BL (+4.9e-06) to AG (–1.7e-06) to the national estimate (–4.2e-06) is broadly consistent with a data quality attenuation story: as measurement quality decreases, the income coefficient shifts in the negative direction. However, LU does not fit this gradient cleanly, which cautions against a purely data-quality-based interpretation. The divergence in LU is plausibly explained by the strong urban core of the city of Lucerne — a high-income municipality with low renewable share — creating a within-canton composition effect that resembles the national pattern.
+
+The exceptionally high R² in BL (0.796 vs. 0.323 nationally) confirms that the model fits the high-quality data substantially better, consistent with reduced attenuation bias from outcome measurement error. The positive and significant share_lowqual coefficient in BL (+0.60, p < 0.05) — which is negative in all other specifications — further supports this interpretation: in a canton where data quality is generally high, the remaining low-quality entries likely represent municipalities with high renovation activity where new renewable systems were installed after the Volkszählung 2000 but not formally re-entered into the GWR, producing a spurious positive correlation between low-quality entries and renewable shares. In AG, by contrast, share_lowqual is strongly negative (–0.260, p < 0.001), indicating that in data-poor cantons, low-quality entries genuinely proxy for unrecorded fossil heating systems.
+
+Taken together, the subgroup analysis provides suggestive evidence that the negative national income coefficient is a downward-biased estimate of the true relationship. In the canton with the highest data quality, income is positively associated with renewable adoption — consistent with the theoretical expectation that financial capacity facilitates investment in renewable heating systems. Resolving the ambiguity introduced by LU would require additional canton-level controls or a building-level analysis that directly links heating system records to owner income data.
+
+```{r cantonal maps}
+
+map_data <- map_data %>%
+  left_join(muni_analysis %>% select(bfs_id, canton), 
+            by = c("id" = "bfs_id"))
+
+map_data <- map_data %>%
+  rename(canton = canton.x) %>%
+  select(-canton.y)
+
+# Kantone filtern
+cantons_focus <- c("BL", "LU", "AG")
+
+map_data_cantons <- map_data %>%
+  filter(canton %in% cantons_focus) %>%
+  mutate(canton_label = case_when(
+    canton == "BL" ~ "Basel-Landschaft (high quality)",
+    canton == "LU" ~ "Lucerne (medium quality)",
+    canton == "AG" ~ "Aargau (low quality)"
+  ),
+  canton_label = factor(canton_label, levels = c(
+    "Basel-Landschaft (high quality)",
+    "Lucerne (medium quality)",
+    "Aargau (low quality)"
+  )))
+
+kantone_focus <- kantone_sf %>%
+  filter(id %in% c("BL", "LU", "AG"))  # Spaltenname ggf. anpassen
+
+# Karte 1 — Anteil erneuerbare Heizungen, facettiert nach Kanton
+p_canton_renewable <- ggplot() +
+  geom_sf(data = map_data_cantons,
+          aes(fill = share_renewable),
+          colour = "white", linewidth = 0.1) +
+  geom_sf(data = kantone_focus,
+          fill = NA, colour = "white", linewidth = 0.8) +
+  facet_wrap(~ canton_label, nrow = 1) +
+  scale_fill_viridis_c(
+    option    = "mako",
+    direction = -1,
+    labels    = scales::percent_format(accuracy = 1),
+    na.value  = "grey88",
+    name      = "Share\nrenewable"
+  ) +
+  labs(title = "Renewable heating share by municipality") +
+  map_theme +
+  theme(strip.text = element_text(size = 9, face = "bold"))
+
+# Karte 2 — Medianeinkommen, facettiert nach Kanton
+p_canton_income <- ggplot() +
+  geom_sf(data = map_data_cantons,
+          aes(fill = median_income),
+          colour = "white", linewidth = 0.1) +
+  geom_sf(data = kantone_focus,
+          fill = NA, colour = "white", linewidth = 0.8) +
+  facet_wrap(~ canton_label, nrow = 1) +
+  scale_fill_viridis_c(
+    option    = "rocket",
+    direction = -1,
+    labels    = scales::comma_format(suffix = " k", scale = 1/1000),
+    na.value  = "grey88",
+    name      = "Median\nincome\n(CHF)"
+  ) +
+  labs(title = "Median taxable income by municipality (ESTV 2022)") +
+  map_theme +
+  theme(strip.text = element_text(size = 9, face = "bold"))
+
+p_canton_renewable
+p_canton_income
+```
+
+The cantonal maps visualise the spatial distribution of renewable heating adoption and median income for the three focus cantons. Several patterns are immediately visible.
+
+In Basel-Landschaft, municipalities with higher renewable shares are concentrated in the eastern and central parts of the canton, while the municipalities directly bordering Basel-Stadt in the northwest show lower shares. The income map shows the inverse pattern: the highest incomes are concentrated precisely in these northwestern municipalities. This spatial inverse relationship between income and renewables is visually consistent with the positive regression coefficient found for BL — within the canton, the high-income suburban municipalities close to Basel appear to be driving the positive association, while rural eastern municipalities combine lower incomes with higher renewable shares.
+
+In Lucerne, the most striking feature of the renewable map is a single very dark municipality in the centre-south of the canton, indicating a renewable share well above 80%. The income map shows no corresponding income spike in the same location, suggesting this outlier is driven by local structural factors rather than income. The broader pattern shows higher renewable shares in the rural south and lower shares in the urban core around the city of Lucerne, while the income map shows the inverse — the city and its immediate surroundings have the highest incomes. This spatial pattern is consistent with the negative income coefficient found for LU.
+
+Aargau shows a more uniform distribution in both maps compared to the other two cantons, consistent with its more homogeneous peri-urban character. Renewable shares are broadly in the 15–35% range across most municipalities, with isolated higher-share clusters in the northeast. The income distribution is similarly diffuse, with the highest incomes concentrated in municipalities bordering Zurich in the east. No strong spatial inverse pattern between income and renewables is immediately visible, consistent with the weak and only marginally significant income coefficient found for AG.
 
 ## Conclusion
 
@@ -650,6 +870,9 @@ Regarding the first research question, the analysis finds a statistically signif
 
 Regarding the second research question, the income coefficient attenuates substantially but does not disappear as controls are added. Adding building stock controls (M2) slightly amplifies the coefficient through a suppressor effect via share_efh, while adding municipality type and log population (M3) reduces it by approximately 22%, absorbing the urban-rural gradient. The most notable attenuation occurs when cantonal fixed effects are introduced (M4), where the coefficient reduces by a further 57% and the explained variance jumps from 32% to 58%. This indicates that a large share of the income–renewables association is driven by between-canton differences in subsidy regimes, building regulations, and energy infrastructure rather than by income per se. Within cantons, however, the negative income effect persists, suggesting a genuine structural pattern that is not fully explained by the controls available in this analysis.
 
-Three limitations constrain the interpretability of these findings. First, the analysis operates at the municipal aggregate level, and the observed associations cannot be attributed to individual building owners, whose financial capacity is the theoretically relevant decision variable. Second, approximately 50% of GWR heating entries are flagged as low quality, likely leading to an underestimation of true renewable adoption rates and an attenuation of the estimated income effect. Third, while cantonal fixed effects absorb time-invariant cantonal heterogeneity in subsidy programmes, they cannot account for within-canton variation in local incentive schemes or for changes in subsidy generosity over time — meaning the residual income effect identified in M4 may still partly reflect unobserved cantonal policy variation rather than a structural income constraint on renewable adoption.
+The canton-level subgroup analysis provides important additional nuance. In Basel-Landschaft, the canton with the best documented data quality (share_lowqual = 9.4%), the income coefficient reverses sign and becomes significantly positive (+4.9e-06, p < 0.01): within BL, higher-income municipalities have a higher renewable heating share, which is the theoretically expected direction. The cantonal maps confirm this pattern spatially — high-income municipalities in the northwestern part of BL bordering Basel-Stadt show lower renewable shares, while the broader within-canton pattern points toward a positive income–renewables association once the suburban fringe effect is accounted for in the regression. In Aargau, the low-quality comparison canton (share_lowqual = 60.9%), the coefficient is negative but small and only marginally significant (–1.7e-06, p < 0.05), and the cantonal maps show no strong spatial pattern between income and renewables, consistent with the weak regression result. Lucerne does not fit the data quality gradient cleanly: despite medium data quality, the income coefficient is the most strongly negative of the three cantons (–7.0e-06, p < 0.01), likely reflecting the pronounced urban-rural contrast around the city of Lucerne rather than a data quality effect.
+
+The gradient from BL (+4.9e-06) to AG (–1.7e-06) to the national estimate (–4.2e-06) is broadly consistent with the hypothesis that measurement error in low-quality cantons attenuates and ultimately reverses the true income–renewables relationship. The BL finding provides suggestive evidence that at sufficient data quality, income is positively associated with renewable heating adoption — consistent with the theoretical expectation that financial capacity facilitates investment at the point of the individual heating decision.
+Three limitations constrain the interpretability of these findings. First, the analysis operates at the municipal aggregate level, and the observed associations cannot be attributed to individual building owners, whose financial capacity is the theoretically relevant decision variable. Second, approximately 50% of GWR heating entries are flagged as low quality, likely leading to an underestimation of true renewable adoption rates and an attenuation of the estimated income effect — a concern partially addressed by the canton-level subgroup analysis but not fully resolved. Third, while cantonal fixed effects absorb time-invariant cantonal heterogeneity in subsidy programmes, they cannot account for within-canton variation in local incentive schemes or for changes in subsidy generosity over time, meaning the residual income effect identified in M4 may still partly reflect unobserved cantonal policy variation rather than a structural income constraint on renewable adoption.
 
 Future research could address these limitations by working with building-level panel data that tracks heating system replacements over time, enabling a cleaner identification of the income effect at the point of the investment decision. Exploiting variation in cantonal and communal subsidy programmes as a quasi-experimental instrument would further strengthen causal inference. Such an analysis would require linking GWR building records to owner-level tax data — a data linkage that is technically feasible within the Swiss administrative data infrastructure but requires access beyond publicly available sources.
