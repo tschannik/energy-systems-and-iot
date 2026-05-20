@@ -169,3 +169,10 @@ ggplot(map_data) +
   labs(title = "Mean taxable income per taxpayer (2022)",
        fill = "CHF") +
   theme_void()
+
+
+residential %>%
+  count(is.na(GENH1))
+
+read_excel(estv_file, sheet = "511", skip = 2, n_max = 2)
+read_excel(estv_file, sheet = "512", skip = 2, n_max = 2)
