@@ -24,6 +24,8 @@ library(maps)
 library(modelsummary)
 library(fixest)
 library(broom)
+library(tidyr)
+library(tibble)
 
 ```
 
@@ -312,11 +314,46 @@ The share of low-quality GWR heating entries (share_lowqual, Median 31.8%, IQR 1
 ```{r eda correlation matrix}
 
 ## 2. Korrelationsmatrix -------------------------------------------------------
-muni_analysis %>%
+cor_matrix <- muni_analysis %>%
   select(share_renewable, median_income, share_efh,
          share_pre1945, share_lowqual, log_pop) %>%
   cor(use = "complete.obs") %>%
   round(2)
+
+cor_matrix
+
+## Correlation plot ------------------------------------------------------------
+cor_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "corr") %>%
+  mutate(
+    var1 = factor(var1, levels = rownames(cor_matrix)),
+    var2 = factor(var2, levels = rev(rownames(cor_matrix)))
+  ) %>%
+  ggplot(aes(var1, var2, fill = corr)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", corr)), size = 3.2) +
+  scale_fill_gradient2(
+    low      = "darkred",
+    mid      = "white",
+    high     = "steelblue",
+    midpoint = 0,
+    limits   = c(-1, 1),
+    name     = "Pearson\ncorrelation"
+  ) +
+  labs(
+    title = "Correlation matrix of analysis variables",
+    x     = NULL,
+    y     = NULL
+  ) +
+  coord_fixed() +
+  theme_minimal() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
 
 ```
 
