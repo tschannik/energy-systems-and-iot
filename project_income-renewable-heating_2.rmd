@@ -289,6 +289,8 @@ muni_analysis <- muni_analysis %>%
 
 ## Analysis
 
+### Univariate Statistics
+
 ```{r eda univariate statistics}
 
 ## ── EDA ──────────────────────────────────────────────────────────────────────
@@ -301,8 +303,6 @@ muni_analysis %>%
 
 ```
 
-### Univariate Statistics
-
 The dependent variable share_renewable is right-skewed (Median 25.5%, Mean 28.4%, IQR 16.2–37.5%). The majority of municipalities fall between a 15% and 35% share of renewable heating, while a long right-hand tail extends up to 93.6%. The distribution is not skewed enough to warrant a log transformation but should be treated as a proportion during model interpretation.
 
 Median income (median_income) is approximately symmetrically distributed (Median 59,700 CHF, IQR 54,800–65,688 CHF) with a slight right-hand tail reaching up to 115,300 CHF – driven by high-income, tax-advantaged municipalities, primarily in Zug and Schwyz. A log transformation is plausible for the regression here, as the distribution at the lower end (from approx. 30,000 CHF downwards) exhibits stronger left-skewness. The minimum of 6,900 CHF is likely due to isolated micro-municipalities with unreliable FTA (ESTV) entries.
@@ -310,6 +310,8 @@ Median income (median_income) is approximately symmetrically distributed (Median
 The share of single-family houses (share_efh) varies considerably across municipalities (Median 70.0%, IQR 60.7–76.9%, Min 11.5%, Max 97.5%). Urban centres such as Zurich or Geneva fall at the lower end of the distribution, where multi-family buildings dominate the housing stock, while small rural municipalities consist almost entirely of detached housing. The positive correlation with share_renewable (r = 0.15) is in the expected direction: municipalities with a higher share of single-family houses tend to show higher renewable heating adoption, consistent with heat pumps and wood heating being predominantly installed in detached buildings.
 
 The share of low-quality GWR heating entries (share_lowqual, Median 31.8%, IQR 18.3–51.0%) confirms the challenge outlined in the data description: one-third of the entries are outdated or undated. The wide dispersion indicates that using this share as a control variable is sensible, as it absorbs measurement noise at the municipal level.
+
+### Correlation Matrix
 
 ```{r eda correlation matrix}
 
@@ -359,8 +361,6 @@ cor_matrix %>%
 
 Figure 2: Pearson correlation matrix of the main analysis variables across all 2,098 municipalities in the analytical sample.
 
-### Correlation Matrix
-
 The most striking finding in the correlation matrix is the negative correlation between median income and the share of renewable heating (r = –0.36). This contradicts the intuitive expectation that higher purchasing power facilitates the adoption of renewable heating systems. This effect is explained by the urban concentration of high-income municipalities: due to structural factors, urban municipalities have lower renewable shares—gas heating and district heating (excluded here) dominate—but above-average incomes.
 
 The share of single-family houses (share_efh) is positively correlated with share_renewable (r = 0.15) and median_income (r = 0.19), and negatively correlated with log_pop (r = –0.31), confirming that larger, denser municipalities have fewer single-family houses and lower renewable shares. This pattern suggests that share_efh partially mediates the relationship between urbanity and renewable adoption, and its inclusion in the regression will help disentangle the income effect from building stock composition.
@@ -369,19 +369,31 @@ Also relevant is the negative correlation between municipality size (log_pop) an
 
 share_pre1945 shows virtually no correlation with share_renewable (r = –0.04), which is surprising at first glance, as older buildings typically have lower renovation rates. A possible explanation: in municipalities with a high share of old buildings, the GWR data entries are also older, potentially biasing the measured renewable rate upward (outdated entries may fail to classify electric heating as fossil-fuel-based, for example). The low correlation of share_lowqual with all other variables (max. |r| = 0.15) suggests that data quality issues are not systematically related to income, supporting its use as a control variable.
 
+### Distribution of share_renewable (Histogram)
+
 ```{r eda distribution of share renewable}
 
 ## 3. Plot 1 — Verteilung share_renewable -------------------------------------
+# Konsistente Typologie-Labels (gleiche Reihenfolge und Farben wie bei den
+# folgenden Scatter- und Boxplots)
+typology_labels <- c("1" = "Urban", "2" = "Periurban", "3" = "Rural")
+
 p1 <- muni_analysis %>%
-  ggplot(aes(share_renewable)) +
-  geom_histogram(binwidth = 0.05, fill = "steelblue", colour = "white") +
+  mutate(typology_3 = factor(typology_3, labels = typology_labels)) %>%
+  ggplot(aes(share_renewable, fill = typology_3)) +
+  geom_histogram(binwidth = 0.05, colour = "white", position = "stack") +
   scale_x_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("Urban"     = "steelblue",
+                               "Periurban" = "darkorange",
+                               "Rural"     = "forestgreen")) +
   labs(
     title = "Distribution of renewable heating share",
     x     = "Share of buildings with renewable heating",
-    y     = "Number of municipalities"
+    y     = "Number of municipalities",
+    fill  = "Municipality type"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(legend.position = "bottom")
 
 p1
 
@@ -389,9 +401,9 @@ p1
 
 Figure 3: Distribution of the renewable heating share across Swiss municipalities.
 
-### Distribution of share_renewable (Histogram)
-
 The distribution shows a clear peak at 15–30%, with the highest concentration between 10% and 35%. Only a few municipalities exceed 50%, and the tail beyond 75% likely represents small alpine municipalities with a high share of wood heating. The histogram supports using the untransformed variable as the outcome, given that the skewness is moderate. A beta regression or an arcsine transformation would be indicated if there were a stronger concentration at the boundaries (near 0 or 1), which is not the case here.
+
+### Distribution of median_income (Histogram)
 
 ```{r eda plot distribution of median income}
 
@@ -413,9 +425,9 @@ p2
 
 Figure 4: Distribution of median taxable income across Swiss municipalities (ESTV 2022).
 
-### Distribution of median_income (Histogram)
-
 The income distribution is unimodal and approximately normally distributed in its core range (40,000–80,000 CHF), with a right-hand tail caused by low-tax municipalities. The sharp drop-off below 30,000 CHF reflects the Swiss price level; outliers below this threshold require methodological verification. For the regression, a robustness check using log-transformed income is recommended: the relationship between purchasing power and adoption behavior is plausibly non-linear (each additional franc has a stronger impact at lower income levels than at higher ones).
+
+### Scatterplot: Income vs. Renewable Share by Municipality Type
 
 ```{r eda scatterplot median income vs share renewable}
 
@@ -445,8 +457,6 @@ p3
 
 Figure 5: Scatterplot of median taxable income against the renewable heating share, with OLS regression lines fitted separately for urban, peri-urban, and rural municipalities.
 
-### Scatterplot: Income vs. Renewable Share by Municipality Type
-
 The scatterplot yields the central finding of the EDA. Three patterns stand out:
 
     Direction: The relationship is negative across all three municipality types—as income increases, the share of renewable heating decreases. The OLS regression lines consistently display a negative slope, which is steepest for rural municipalities (green).
@@ -456,6 +466,8 @@ The scatterplot yields the central finding of the EDA. Three patterns stand out:
     Dispersion: The very wide dispersion—particularly in rural areas—shows that income alone explains only a fraction of the variance. This is consistent with r = –0.36. For the regression, this implies that further explanatory power must be derived from control variables and canton fixed effects.
 
 Interpretation of the negative direction: The surprising negative sign is highly likely a composition effect: high-income municipalities are disproportionately urban (higher log_pop, more gas/district heating), while lower-income municipalities are disproportionately rural (more wood, heat pumps in single-family homes). Whether income exerts a true causal effect on heating adoption—independent of urbanity and building structure—will be revealed by the regression with controls.
+
+### Boxplot: Renewables by Municipality Type
 
 ```{r eda boxplot share renewable by typology}
 
@@ -480,11 +492,11 @@ p4
 
 Figure 6: Renewable heating share by municipality type (urban, peri-urban, rural).
 
-### Boxplot: Renewables by Municipality Type
-
 The boxplot confirms the typological gradient: rural municipalities (median ~33%) > peri-urban (median ~23%) > urban (median ~15%). The IQR for rural municipalities (approx. 25–47%) is considerably wider than that of urban ones (~10–25%), indicating greater heterogeneity in rural areas—likely due to cantonal differences in subsidy regimes and local fuel availability (wood vs. heat pump potential).
 
 Upper outliers are present across all typologies; for rural municipalities, they extend beyond 90%—representing individual alpine communities with historically established shares of wood heating. Urban outliers above 50% are rare and warrant an individual municipality-level inspection (e.g., municipalities with local heat pump programs or erroneous GWR entries).
+
+### Choropleth Maps: Renewable Share and Median Income
 
 ```{r eda chloropleth maps}
 
@@ -549,8 +561,6 @@ p_map_income
 Figure 7: Choropleth map of the renewable heating share by municipality across Switzerland (GWR, 2024).
 
 Figure 8: Choropleth map of median taxable income by municipality across Switzerland (ESTV 2022).
-
-### Choropleth Maps: Renewable Share and Median Income
 
 The spatial distribution of renewable heating adoption (Figure 7) reveals a pronounced cantonal pattern that mirrors the regression findings. Municipalities with the highest renewable shares — shown in dark blue — are concentrated in central Switzerland, particularly in the cantons of Lucerne, Zug, and parts of Solothurn and Aargau, as well as in scattered alpine municipalities across Graubünden and Valais where wood heating is historically dominant. Western Switzerland (Romandy) and Ticino show consistently lower renewable shares, displayed in light green, suggesting a structural east-west divide that likely reflects differences in cantonal subsidy regimes, building traditions, and energy infrastructure.
 
@@ -644,9 +654,15 @@ p_map_typology
 
 ```
 
+Figure 9: Dominant heating system per municipality across Switzerland (GWR, 2024).
+
+Figure 10: Municipality type (BFS three-class typology: urban, peri-urban, rural) across Switzerland.
+
 The dominant heating system map reveals a clear spatial structure that mirrors the urban-rural and regional patterns identified in the regression analysis. Oil heating dominates the majority of Swiss municipalities, shown in red, and is particularly prevalent across the Mittelland, the Jura, and most of western Switzerland (Romandy). Wood heating, shown in brown, is the dominant system in a contiguous belt of alpine and pre-alpine municipalities stretching from the Bernese Oberland through central Switzerland into Graubünden and parts of Valais — consistent with the historically established biomass heating tradition in these regions. Heat pumps, shown in blue, appear predominantly in the northeastern part of the country, particularly in the cantons of Thurgau, Schaffhausen, and parts of St. Gallen, suggesting more recent and concentrated adoption in these areas. Gas heating is concentrated in a small number of municipalities, primarily in the greater Zurich agglomeration and the Lake Geneva region, reflecting the geographic limits of the gas distribution network. District heating remains spatially isolated, appearing only in a handful of municipalities.
 
 The municipality type map confirms the spatial pattern described in the EDA: urban municipalities are clustered along the Mittelland axis from Geneva through Zurich to St. Gallen, with additional clusters around Bern, Basel, and Lucerne. Peri-urban municipalities form a ring around these urban cores, while rural municipalities dominate the alpine regions, the Jura, and peripheral areas of eastern Switzerland. Comparing both maps, the overlap between oil-dominated municipalities and rural typology is striking — many rural areas outside the alpine wood-heating belt rely almost exclusively on oil, which has important implications for the energy transition: these municipalities combine the structural challenges of dispersed single-family housing with fossil fuel dependency, yet lack the urban infrastructure for gas or district heating alternatives.
+
+### Regression Results
 
 ```{r regression models}
 
@@ -695,8 +711,6 @@ modelsummary(
 )
 ```
 
-### Regression Results
-
 Across all four model specifications, the income coefficient is negative and statistically significant at the 0.1% level, confirming the negative association observed in the EDA. The magnitude and interpretation of the effect evolves substantially as controls are added.
 
 In the baseline model (M1), a 10,000 CHF increase in median municipal income is associated with a 5.4 percentage point reduction in the renewable heating share. Adding building stock controls in M2 slightly increases the magnitude to 6.1 percentage points. The direction of this change reflects a suppressor effect: share_efh is positively correlated with both income and renewable adoption, so controlling for it reveals a stronger direct income effect. The share of single-family houses itself is strongly positive (0.295, p < 0.001), confirming that municipalities with more detached housing have substantially higher renewable shares.
@@ -706,6 +720,8 @@ In M3, the income coefficient attenuates to –4.2 percentage points per 10,000 
 The most notable finding is the jump in R² from 32.3% (M3) to 57.7% (M4) when cantonal fixed effects are added, while the income coefficient further attenuates to –1.8 percentage points per 10,000 CHF. This indicates strong cantonal heterogeneity—likely driven by differences in subsidy programmes, building regulations, and local energy infrastructure—that was previously confounded with the income measure. Within cantons, the income effect remains negative and significant, but is considerably smaller than the raw association suggests.
 
 Two further findings deserve attention. First, share_pre1945 changes sign between M3 (–0.072) and M4 (+0.100): without canton fixed effects, municipalities with older building stocks tend to have fewer renewables; within cantons, the relationship reverses. This likely reflects that certain cantons combine old rural building stock with high wood heating penetration. Second, share_lowqual is significantly negative in M1–M3 but becomes insignificant in M4, suggesting that the data quality differential is primarily a between-canton rather than a within-canton phenomenon.
+
+### Coefficient Stability Plot
 
 ```{r coefficient stability plot}
 
@@ -736,11 +752,11 @@ ggplot(coef_stability, aes(x = model, y = estimate,
   theme_minimal()
 ```
 
-Figure 9: Point estimate and 95% confidence interval of the income coefficient across the four nested regression specifications (M1–M4).
+Figure 11: Point estimate and 95% confidence interval of the income coefficient across the four nested regression specifications (M1–M4).
 
-### Coefficient Stability Plot
+Figure 11 summarises the stability of the income coefficient across the four model specifications. The coefficient remains consistently negative across all specifications, with confidence intervals that never include zero. The point estimate shifts from –5.4e-06 in M1 to –1.8e-06 in M4, a reduction of approximately 67%, as urbanity, building structure, and cantonal heterogeneity are progressively absorbed by the controls. The widening confidence interval in M4 reflects the reduced within-canton variation available for identification after canton fixed effects are partialled out, but the effect remains precisely estimated and substantively meaningful.
 
-Figure 9 summarises the stability of the income coefficient across the four model specifications. The coefficient remains consistently negative across all specifications, with confidence intervals that never include zero. The point estimate shifts from –5.4e-06 in M1 to –1.8e-06 in M4, a reduction of approximately 67%, as urbanity, building structure, and cantonal heterogeneity are progressively absorbed by the controls. The widening confidence interval in M4 reflects the reduced within-canton variation available for identification after canton fixed effects are partialled out, but the effect remains precisely estimated and substantively meaningful.
+### Sensitivity Analysis: Including District Heating
 
 ```{r sensitivity analysis district heating}
 
@@ -779,8 +795,6 @@ modelsummary(
 )
 
 ```
-
-### Sensitivity Analysis: Including District Heating
 
 As a robustness check, the main model specification (M4) is re-estimated with district heating included in the renewable category. District heating is excluded from the primary definition on the grounds that its adoption is structurally determined by local infrastructure availability rather than individual investment decisions. However, since district heating in Switzerland is predominantly fed by waste heat and biomass, its exclusion may understate the true renewable share in urban municipalities where district heating networks are most prevalent.
 
@@ -916,9 +930,9 @@ ggplot(coef_subgroup,
   theme_minimal()
 ```
 
-Figure 10: Income versus renewable heating share for the three focus cantons (Basel-Landschaft, Lucerne, Aargau) compared to the national sample, with per-facet OLS regression lines.
+Figure 12: Income versus renewable heating share for the three focus cantons (Basel-Landschaft, Lucerne, Aargau) compared to the national sample, with per-facet OLS regression lines.
 
-Figure 11: Point estimate and 95% confidence interval of the income coefficient from the M3 specification estimated separately for each focus canton and compared to the national estimate.
+Figure 13: Point estimate and 95% confidence interval of the income coefficient from the M3 specification estimated separately for each focus canton and compared to the national estimate.
 
 The canton-level subgroup analysis yields a striking finding that substantially enriches the interpretation of the national results. The income coefficient varies systematically with data quality across the three cantons, consistent with the hypothesis that measurement error in low-quality cantons attenuates the true income–renewables relationship.
 
@@ -1001,9 +1015,9 @@ p_canton_renewable
 p_canton_income
 ```
 
-Figure 12: Renewable heating share by municipality for the three focus cantons (Basel-Landschaft, Lucerne, Aargau).
+Figure 14: Renewable heating share by municipality for the three focus cantons (Basel-Landschaft, Lucerne, Aargau).
 
-Figure 13: Median taxable income by municipality for the three focus cantons (Basel-Landschaft, Lucerne, Aargau; ESTV 2022).
+Figure 15: Median taxable income by municipality for the three focus cantons (Basel-Landschaft, Lucerne, Aargau; ESTV 2022).
 
 The cantonal maps visualise the spatial distribution of renewable heating adoption and median income for the three focus cantons. Several patterns are immediately visible.
 
@@ -1032,11 +1046,6 @@ Future research could address these limitations by working with building-level p
 
 | Purpose of use | Description of what AI tools were used for | Affected parts of the proof of performance | AI tools used |
 |---|---|---|---|
-| Brainstorming hypotheses and research questions | Generation of suggestions for hypotheses and later for research questions based on given hypotheses | R Markdown and knitted HTML file | ChatGPT https://chatgpt.com/ |
-| Creation of R code | Several adjustments to the prompts until the code corresponded to the desired result (e.g., aggregations, visualizations, regression specifications, choropleth maps, inline elements, LaTeX symbols and formulas), generation of suggestions for commenting the code, debugging (especially bugs during compilation) | R Markdown and knitted HTML file | ChatGPT https://chatgpt.com/ |
-| Interpretation and writing support | Drafting and refining the narrative interpretation of EDA results, regression coefficients, and the canton-level subgroup analysis based on the produced figures and tables | R Markdown and knitted HTML file | ChatGPT https://chatgpt.com/ |
-| Translation | Translation of selected sentences from German into English | R Markdown and knitted HTML file | DeepL Translate https://www.deepl.com/ |
-
-The use of ChatGPT proved particularly helpful in quickly translating plot ideas into code, thus providing a quick impression of the visualization and its suitability for the analysis.
-
-At the same time, it became clear how important it is to have a certain level of knowledge in R (packages) and in interpreting graphs and regression output. This allows adjustments to be made much more efficiently than in communication with ChatGPT and enables critical questioning of sometimes incorrect interpretative approaches.
+| Brainstorming the format of the work | Generation of suggestions for structuring the proof of performance and for working out the preliminary study that informed this analysis (scope, sectioning, narrative flow) | R Markdown and knitted HTML file | Claude https://claude.ai/ |
+| Creation of R code | Several adjustments to the prompts until the code corresponded to the desired result (e.g., aggregations, visualizations, regression specifications, choropleth maps, inline elements and formulas), generation of suggestions for commenting the code, debugging (especially bugs during compilation) | R Markdown and knitted HTML file | Claude https://claude.ai/ |
+| Interpretation and writing support | Drafting and refining the narrative interpretation of EDA results, regression coefficients, and the canton-level subgroup analysis based on the produced figures and tables | R Markdown and knitted HTML file | Claude https://claude.ai/ |
