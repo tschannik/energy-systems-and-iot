@@ -507,6 +507,96 @@ The income map (Figure Y) shows a complementary but inverse pattern. The highest
 
 Juxtaposing both maps makes the composition effect discussed in the regression analysis spatially legible: the negative association between income and renewable heating is not driven by a uniform within-canton pattern, but largely by the structural contrast between high-income urban and peri-urban agglomerations on the one hand and lower-income rural municipalities on the other. The substantial cantonal variation visible in both maps — particularly the sharp contrast between neighbouring cantons along the Mittelland — underscores why cantonal fixed effects absorb a large share of the explained variance in M4.
 
+### Dominant Heating System Map
+```{r map dominant heating system and typology}
+
+# Sauberer Join — typology_3 und dominant_heating direkt aus muni_analysis
+map_data_plot <- gemeinden_sf %>%
+  mutate(id = as.numeric(id)) %>%
+  left_join(
+    muni_analysis %>% 
+      select(bfs_id, share_heatpump, share_oil, share_gas, 
+             share_wood, share_electric, share_district, typology_3),
+    by = c("id" = "bfs_id")
+  ) %>%
+  mutate(
+    dominant_heating = case_when(
+      share_heatpump >= share_oil & 
+        share_heatpump >= share_gas & 
+        share_heatpump >= share_wood &
+        share_heatpump >= share_electric &
+        share_heatpump >= share_district   ~ "Heat pump",
+      share_oil >= share_gas & 
+        share_oil >= share_wood &
+        share_oil >= share_electric &
+        share_oil >= share_district        ~ "Oil",
+      share_gas >= share_wood & 
+        share_gas >= share_electric &
+        share_gas >= share_district        ~ "Gas",
+      share_wood >= share_electric &
+        share_wood >= share_district       ~ "Wood",
+      share_district >= share_electric     ~ "District heating",
+      TRUE                                 ~ "Electric/other"
+    ),
+    dominant_heating = factor(dominant_heating, levels = c(
+      "Heat pump", "Wood", "Oil", "Gas", "District heating", "Electric/other"
+    )),
+    typology_label = case_when(
+      typology_3 == 1 ~ "Urban",
+      typology_3 == 2 ~ "Peri-urban",
+      typology_3 == 3 ~ "Rural",
+      TRUE            ~ NA_character_
+    )
+  )
+
+# Farbpalette Heizsystem
+heating_colours <- c(
+  "Heat pump"       = "#2166ac",
+  "Wood"            = "#8c510a",
+  "Oil"             = "#d73027",
+  "Gas"             = "#fc8d59",
+  "District heating" = "#762a83",
+  "Electric/other"  = "#d9d9d9"
+)
+
+# Farbpalette Typologie
+typology_colours <- c(
+  "Urban"      = "#2166ac",
+  "Peri-urban" = "#fc8d59",
+  "Rural"      = "#4dac26"
+)
+
+# Karte 1 — Dominantes Heizsystem
+p_map_dominant <- ggplot() +
+  geom_sf(data = map_data_plot %>% filter(!is.na(dominant_heating)),
+          aes(fill = dominant_heating),
+          colour = NA) +
+  geom_sf(data = kantone_sf,
+          fill = NA, colour = "white", linewidth = 0.5) +
+  scale_fill_manual(values = heating_colours, name = "Dominant\nheating system") +
+  labs(title = "Dominant heating system by municipality (2024)") +
+  map_theme
+
+# Karte 2 — Gemeindetyp
+p_map_typology <- ggplot() +
+  geom_sf(data = map_data_plot %>% filter(!is.na(typology_label)),
+          aes(fill = typology_label),
+          colour = NA) +
+  geom_sf(data = kantone_sf,
+          fill = NA, colour = "white", linewidth = 0.5) +
+  scale_fill_manual(values = typology_colours, name = "Municipality\ntype") +
+  labs(title = "Municipality type (BFS typology)") +
+  map_theme
+
+p_map_dominant
+p_map_typology
+
+```
+
+The dominant heating system map reveals a clear spatial structure that mirrors the urban-rural and regional patterns identified in the regression analysis. Oil heating dominates the majority of Swiss municipalities, shown in red, and is particularly prevalent across the Mittelland, the Jura, and most of western Switzerland (Romandy). Wood heating, shown in brown, is the dominant system in a contiguous belt of alpine and pre-alpine municipalities stretching from the Bernese Oberland through central Switzerland into Graubünden and parts of Valais — consistent with the historically established biomass heating tradition in these regions. Heat pumps, shown in blue, appear predominantly in the northeastern part of the country, particularly in the cantons of Thurgau, Schaffhausen, and parts of St. Gallen, suggesting more recent and concentrated adoption in these areas. Gas heating is concentrated in a small number of municipalities, primarily in the greater Zurich agglomeration and the Lake Geneva region, reflecting the geographic limits of the gas distribution network. District heating remains spatially isolated, appearing only in a handful of municipalities.
+
+The municipality type map confirms the spatial pattern described in the EDA: urban municipalities are clustered along the Mittelland axis from Geneva through Zurich to St. Gallen, with additional clusters around Bern, Basel, and Lucerne. Peri-urban municipalities form a ring around these urban cores, while rural municipalities dominate the alpine regions, the Jura, and peripheral areas of eastern Switzerland. Comparing both maps, the overlap between oil-dominated municipalities and rural typology is striking — many rural areas outside the alpine wood-heating belt rely almost exclusively on oil, which has important implications for the energy transition: these municipalities combine the structural challenges of dispersed single-family housing with fossil fuel dependency, yet lack the urban infrastructure for gas or district heating alternatives.
+
 ```{r regression models}
 
 # M1: Baseline
